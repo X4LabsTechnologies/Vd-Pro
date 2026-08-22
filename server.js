@@ -1644,7 +1644,7 @@ app.use(
   })
 );
 
-app.use(mongoSanitize());
+
 app.use(cors());
 app.use(
   express.json({
