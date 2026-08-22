@@ -1202,7 +1202,7 @@ const extractionQueue = new Queue('extraction', REDIS_URL, {
 
 // ===== Middleware =====
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-app.use(mongoSanitize());
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
