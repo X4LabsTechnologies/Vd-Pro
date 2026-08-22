@@ -460,6 +460,7 @@ class BrowserContextPool {
         ignoreHTTPSErrors: true,
         viewport: { width: 1920, height: 1080 },
         locale: 'en-US',
+        userAgent: this.getRandomUserAgent(),
         timezoneId: 'America/New_York',
         geolocation: { latitude: 40.7128, longitude: -74.0060 },
         permissions: ['geolocation'],
@@ -485,8 +486,6 @@ class BrowserContextPool {
       const context = await this.browser.newContext(contextOptions);
       const page = await context.newPage();
 
-      const userAgent = this.getRandomUserAgent();
-      await page.setUserAgent(userAgent);
       await page.addInitScript(StealthGenerator.generateScript());
 
       return { context, page, createdAt: Date.now(), usage: 0, proxy };
