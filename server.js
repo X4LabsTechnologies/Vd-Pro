@@ -482,7 +482,7 @@ class BrowserContextPool {
         contextOptions.proxy = { server: proxy.url };
       }
 
-      const context = await this.browser.createBrowserContext(contextOptions);
+      const context = await this.browser.newContext(contextOptions);
       const page = await context.newPage();
 
       const userAgent = this.getRandomUserAgent();
