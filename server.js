@@ -14,7 +14,7 @@ import crypto from 'crypto';
 import helmet from 'helmet';
 import mongoSanitize from 'mongo-sanitize';
 import { createServer } from 'http';
-import WebSocket from 'ws';
+import { WebSocketServer } from 'ws';
 import * as prometheus from 'prom-client';
 import { URL as URLParser } from 'url';
 import dns from 'dns/promises';
@@ -1644,7 +1644,7 @@ app.use(
   })
 );
 
-
+app.use(mongoSanitize());
 app.use(cors());
 app.use(
   express.json({
@@ -2364,10 +2364,9 @@ extractionQueue.process(
    WebSocket
    ========================= */
 
-const wss =
-  new WebSocket.Server({
-    server: httpServer
-  });
+const wss = new WebSocketServer({
+  server: httpServer
+});
 
 wss.on(
   'connection',
