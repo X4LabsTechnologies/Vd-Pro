@@ -26,18 +26,19 @@ config();
 
 const app = express();
 const httpServer = createServer(app);
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'ultra-secret-2024';
+
+const PORT = Number(process.env.PORT || 3000);
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://localhost:27017/vd-pro';
-const PROXIES = (process.env.PROXIES || '').split(',').filter(Boolean);
+const MONGODB_URL =
+  process.env.MONGODB_URL || 'mongodb://localhost:27017/vd-pro';
+const PROXIES = (process.env.PROXIES || '')
+  .split(',')
+  .map((p) => p.trim())
+  .filter(Boolean);
 
 const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  transport: {
-    target: 'pino-pretty',
-    options: { colorize: true, translateTime: 'SYS:standard' }
-  }
+  level: process.env.LOG_LEVEL || 'info'
 });
 
 const metrics = {
@@ -53,25 +54,53 @@ const metrics = {
     labelNames: ['status'],
     buckets: [5, 10, 20, 30, 45, 60, 90, 120]
   }),
-  sourceSuccess: new prometheus.Counter({ name: 'source_success_total', help: 'Successful extractions' }),
-  sourceFailure: new prometheus.Counter({ name: 'source_failure_total', help: 'Failed extractions', labelNames: ['reason'] }),
-  cacheHits: new prometheus.Counter({ name: 'cache_hits_total', help: 'Cache hits', labelNames: ['level'] })
+  sourceSuccess: new prometheus.Counter({
+    name: 'source_success_total',
+    help: 'Successful extractions'
+  }),
+  sourceFailure: new prometheus.Counter({
+    name: 'source_failure_total',
+    help: 'Failed extractions',
+    labelNames: ['reason']
+  }),
+  cacheHits: new prometheus.Counter({
+    name: 'cache_hits_total',
+    help: 'Cache hits',
+    labelNames: ['level']
+  })
 };
 
-Object.values(metrics).forEach(metric => {
+for (const metric of Object.values(metrics)) {
   try {
     prometheus.register.registerMetric(metric);
-  } catch (e) {}
-});
+  } catch (_) {}
+}
 
 let mongoClient = null;
 let db = null;
+let browserPool = null;
+let proxyHealthTimer = null;
 
-const connectDatabase = async () => {
+const redis = new Redis(REDIS_URL, {
+  maxRetriesPerRequest: null,
+  retryStrategy: (times) => Math.min(times * 100, 3000),
+  enableReadyCheck: true,
+  lazyConnect: false
+});
+
+redis.on('error', (err) => {
+  logger.warn({ error: err.message }, 'Redis error');
+});
+
+redis.on('connect', () => {
+  logger.info('Redis connected');
+});
+
+async function connectDatabase() {
   try {
     mongoClient = new MongoClient(MONGODB_URL, {
       maxPoolSize: 50,
-      minPoolSize: 10,
+      minPoolSize: 5,
       maxIdleTimeMS: 60000,
       connectTimeoutMS: 10000,
       socketTimeoutMS: 45000,
@@ -81,12 +110,19 @@ const connectDatabase = async () => {
     await mongoClient.connect();
     db = mongoClient.db('vd-pro');
 
-    const collections = ['users', 'extractions', 'cache', 'sessions', 'failed_jobs', 'diagnostics'];
+    const collections = [
+      'users',
+      'extractions',
+      'cache',
+      'sessions',
+      'failed_jobs',
+      'diagnostics'
+    ];
 
     for (const col of collections) {
       try {
         await db.createCollection(col);
-      } catch (e) {}
+      } catch (_) {}
     }
 
     await Promise.all([
@@ -94,35 +130,49 @@ const connectDatabase = async () => {
       db.collection('extractions').createIndex({ createdAt: -1 }),
       db.collection('users').createIndex({ apiKey: 1 }, { unique: true }),
       db.collection('users').createIndex({ email: 1 }, { unique: true }),
-      db.collection('cache').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
-      db.collection('cache').createIndex({ contentHash: 1 }, { unique: true }),
+      db.collection('cache').createIndex(
+        { expiresAt: 1 },
+        { expireAfterSeconds: 0 }
+      ),
+      db.collection('cache').createIndex(
+        { urlHash: 1 },
+        { unique: true }
+      ),
       db.collection('sessions').createIndex({ userId: 1 }),
       db.collection('failed_jobs').createIndex({ createdAt: -1 })
     ]);
 
-    logger.info('✅ MongoDB متصل');
+    logger.info('MongoDB connected');
   } catch (error) {
-    logger.error({ error: error.message }, '❌ MongoDB Error');
+    logger.error({ error: error.message }, 'MongoDB connection failed');
     throw error;
   }
-};
+}
 
-const redis = new Redis(REDIS_URL, {
-  maxRetriesPerRequest: null,
-  retryStrategy: (times) => Math.min(times * 50, 2000),
-  enableReadyCheck: true,
-  lazyConnect: false
-});
+/* =========================
+   Stealth helper
+   ========================= */
 
-redis.on('error', (err) => logger.warn({ error: err.message }, '⚠️ Redis'));
-redis.on('connect', () => logger.info('✅ Redis متصل'));
-
-// ===== Advanced Stealth Script Generator =====
 class StealthGenerator {
   static generateScript() {
-    const randomWebGLVendor = ['Intel Inc.', 'NVIDIA Corporation', 'AMD'][Math.floor(Math.random() * 3)];
-    const randomWebGLRenderer = ['Intel UHD Graphics', 'NVIDIA GeForce GTX 1080', 'AMD Radeon RX 6700'][Math.floor(Math.random() * 3)];
-    const randomTimezone = ['America/New_York', 'Europe/London', 'Asia/Tokyo'][Math.floor(Math.random() * 3)];
+    const randomWebGLVendor = [
+      'Intel Inc.',
+      'NVIDIA Corporation',
+      'AMD'
+    ][Math.floor(Math.random() * 3)];
+
+    const randomWebGLRenderer = [
+      'Intel UHD Graphics',
+      'NVIDIA GeForce GTX 1080',
+      'AMD Radeon RX 6700'
+    ][Math.floor(Math.random() * 3)];
+
+    const randomTimezone = [
+      'America/New_York',
+      'Europe/London',
+      'Asia/Tokyo'
+    ][Math.floor(Math.random() * 3)];
+
     const randomMemory = [4, 8, 16][Math.floor(Math.random() * 3)];
     const randomConcurrency = [2, 4, 8][Math.floor(Math.random() * 3)];
 
@@ -130,220 +180,107 @@ class StealthGenerator {
 (() => {
   'use strict';
 
-  // === NAVIGATOR SPOOFING ===
-  Object.defineProperty(navigator, 'webdriver', { get: () => false });
-  
-  Object.defineProperty(navigator, 'plugins', {
-    get: () => [
-      { name: 'Chrome PDF Plugin', description: 'Portable Document Format' },
-      { name: 'Chrome PDF Viewer' },
-      { name: 'Native Client Executable' }
-    ]
-  });
-  
-  Object.defineProperty(navigator, 'languages', {
-    get: () => ['en-US', 'en']
-  });
-
-  Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
-  Object.defineProperty(navigator, 'product', { get: () => 'Gecko' });
-  Object.defineProperty(navigator, 'platform', {
-    get: () => ['Win32', 'MacIntel', 'Linux x86_64'][Math.floor(Math.random() * 3)]
-  });
-
-  Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 10 });
-  Object.defineProperty(navigator, 'deviceMemory', { get: () => ${randomMemory} });
-  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ${randomConcurrency} });
-
-  // === CHROME RUNTIME ===
-  window.chrome = {
-    runtime: {},
-    loadTimes: () => ({ firstPaintTime: Math.random() * 1000 }),
-    csi: () => ({ startE: Date.now() }),
-    app: {}
-  };
-
-  // === PERMISSIONS ===
-  const originalQuery = navigator.permissions.query;
-  navigator.permissions.query = (params) => (
-    params.name === 'notifications' ?
-      Promise.resolve({ state: Notification.permission }) :
-      originalQuery(params)
-  );
-
-  // === WEBGL SPOOFING (ADVANCED) ===
-  const getWebGLParameter = WebGLRenderingContext.prototype.getParameter;
-  WebGLRenderingContext.prototype.getParameter = function(parameter) {
-    if (parameter === 37445) return '${randomWebGLVendor}';
-    if (parameter === 37446) return '${randomWebGLRenderer}';
-    if (parameter === 7938) return 'WebGL GLSL ES 1.0 ($(randomWebGLVendor))';
-    if (parameter === 7936) return 'WebGL Vertex Shader v1.0';
-    if (parameter === 7937) return 'WebGL Fragment Shader v1.0';
-    return getWebGLParameter.call(this, parameter);
-  };
-
-  // === CANVAS FINGERPRINTING (ADVANCED) ===
-  const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-  const originalToBlob = HTMLCanvasElement.prototype.toBlob;
-  
-  HTMLCanvasElement.prototype.toDataURL = function(type, ...args) {
-    if (type === 'image/png' && this.width < 500 && this.height < 500) {
-      const canvas = document.createElement('canvas');
-      canvas.width = this.width;
-      canvas.height = this.height;
-      const ctx = canvas.getContext('2d');
-      
-      // Add noise to prevent fingerprinting
-      ctx.fillStyle = '#f0f0f0';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
-      for (let i = 0; i < 100; i++) {
-        ctx.fillStyle = \`rgba(\${Math.random()*255},\${Math.random()*255},\${Math.random()*255},0.1)\`;
-        ctx.fillRect(
-          Math.random() * canvas.width,
-          Math.random() * canvas.height,
-          Math.random() * 50,
-          Math.random() * 50
-        );
-      }
-      
-      return canvas.toDataURL(type, ...args);
-    }
-    return originalToDataURL.call(this, type, ...args);
-  };
-
-  HTMLCanvasElement.prototype.toBlob = function(callback, type, ...args) {
-    if (type === 'image/png' && this.width < 500 && this.height < 500) {
-      const canvas = document.createElement('canvas');
-      canvas.width = this.width;
-      canvas.height = this.height;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#f0f0f0';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      return originalToBlob.call(canvas, callback, type, ...args);
-    }
-    return originalToBlob.call(this, callback, type, ...args);
-  };
-
-  // === AUDIOCONTEXT SPOOFING ===
-  const audioContextMethods = {
-    sampleRate: 44100 + Math.random() * 5000,
-    channelCount: Math.random() > 0.5 ? 2 : 4,
-    maxChannelCount: 32
-  };
-
-  const OriginalAudioContext = window.AudioContext || window.webkitAudioContext;
-  window.AudioContext = class extends OriginalAudioContext {
-    constructor() {
-      super();
-      Object.keys(audioContextMethods).forEach(key => {
-        try {
-          Object.defineProperty(this, key, { value: audioContextMethods[key] });
-        } catch (e) {}
-      });
-    }
-  };
-
-  // === CLIENT HINTS ===
-  Object.defineProperty(navigator, 'userAgentData', {
-    get: () => ({
-      brands: [
-        { brand: 'Chromium', version: '121' },
-        { brand: 'Google Chrome', version: '121' },
-        { brand: 'Not A Brand', version: '99' }
-      ],
-      mobile: false,
-      platform: 'Windows',
-      platformVersion: '10.0'
-    })
-  });
-
-  // === CONNECTION ===
-  Object.defineProperty(navigator, 'connection', {
-    get: () => ({
-      downlink: Math.random() * 10 + 5,
-      rtt: Math.random() * 50 + 20,
-      effectiveType: '4g',
-      saveData: false
-    })
-  });
-
-  // === GEOLOCATION ===
-  navigator.geolocation.getCurrentPosition = function(success) {
-    success({
-      coords: {
-        latitude: 40.7128 + (Math.random() - 0.5) * 0.1,
-        longitude: -74.0060 + (Math.random() - 0.5) * 0.1,
-        accuracy: Math.random() * 100 + 50
-      }
+  try {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => false,
+      configurable: true
     });
-  };
+  } catch (_) {}
 
-  // === FUNCTION SPOOFING ===
-  const originalToString = Function.prototype.toString;
-  Function.prototype.toString = function() {
-    if (this === navigator.permissions.query) {
-      return 'function query() { [native code] }';
-    }
-    return originalToString.call(this);
-  };
+  try {
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+      configurable: true
+    });
+  } catch (_) {}
 
-  // === TIMEZONE ===
-  const DateTimeFormat = Intl.DateTimeFormat;
-  const originalResolvedOptions = DateTimeFormat.prototype.resolvedOptions;
-  DateTimeFormat.prototype.resolvedOptions = function() {
-    return {
-      ...originalResolvedOptions.call(this),
-      timeZone: '${randomTimezone}'
+  try {
+    Object.defineProperty(navigator, 'vendor', {
+      get: () => 'Google Inc.',
+      configurable: true
+    });
+  } catch (_) {}
+
+  try {
+    Object.defineProperty(navigator, 'platform', {
+      get: () => 'Win32',
+      configurable: true
+    });
+  } catch (_) {}
+
+  try {
+    Object.defineProperty(navigator, 'deviceMemory', {
+      get: () => ${randomMemory},
+      configurable: true
+    });
+  } catch (_) {}
+
+  try {
+    Object.defineProperty(navigator, 'hardwareConcurrency', {
+      get: () => ${randomConcurrency},
+      configurable: true
+    });
+  } catch (_) {}
+
+  try {
+    const originalGetParameter =
+      WebGLRenderingContext.prototype.getParameter;
+
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+      if (parameter === 37445) return '${randomWebGLVendor}';
+      if (parameter === 37446) return '${randomWebGLRenderer}';
+      return originalGetParameter.call(this, parameter);
     };
-  };
+  } catch (_) {}
 
-  // === FONTS SPOOFING ===
-  const baseFonts = ['monospace', 'sans-serif', 'serif'];
-  const testFonts = ['Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courier New', 'Comic Sans MS'];
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  const testString = 'mmmmmmmmmmlli|';
+  try {
+    const originalResolvedOptions =
+      Intl.DateTimeFormat.prototype.resolvedOptions;
 
-  const measurements = {};
-  baseFonts.forEach(baseFont => {
-    ctx.font = '72px ' + baseFont;
-    measurements[baseFont] = ctx.measureText(testString).width;
-  });
-
-  // === SCREEN PROPERTIES ===
-  Object.defineProperty(screen, 'colorDepth', { value: 24 });
-  Object.defineProperty(screen, 'pixelDepth', { value: 24 });
-
-  // === REMOVE AUTOMATION INDICATORS ===
-  delete navigator.__proto__.webdriver;
+    Intl.DateTimeFormat.prototype.resolvedOptions = function() {
+      return {
+        ...originalResolvedOptions.call(this),
+        timeZone: '${randomTimezone}'
+      };
+    };
+  } catch (_) {}
 })();
 `;
   }
 }
 
-// ===== Proxy Manager with Real Integration =====
+/* =========================
+   Proxy manager
+   ========================= */
+
 class ProxyManager {
   constructor() {
-    this.proxies = PROXIES.map((p, i) => ({
-      url: p,
-      id: i,
-      health: { success: 0, failed: 0, consecutive: 0, available: true }
+    this.proxies = PROXIES.map((url, id) => ({
+      url,
+      id,
+      health: {
+        success: 0,
+        failed: 0,
+        consecutive: 0,
+        available: true
+      }
     }));
-    this.currentIndex = 0;
   }
 
   async healthCheck() {
     for (const proxy of this.proxies) {
       try {
         await axios.get('https://httpbin.org/ip', {
+          proxy: this.toAxiosProxy(proxy.url),
           timeout: 8000,
           validateStatus: () => true
         });
+
         proxy.health.available = true;
         proxy.health.consecutive = 0;
-      } catch (e) {
-        proxy.health.consecutive++;
+      } catch (_) {
+        proxy.health.consecutive += 1;
+
         if (proxy.health.consecutive >= 3) {
           proxy.health.available = false;
         }
@@ -351,120 +288,184 @@ class ProxyManager {
     }
   }
 
-  getNextProxy() {
-    if (this.proxies.length === 0) return null;
+  toAxiosProxy(proxyUrl) {
+    try {
+      const parsed = new URLParser(proxyUrl);
 
-    const available = this.proxies.filter(p => p.health.available);
-    if (available.length === 0) {
-      this.proxies.forEach(p => { p.health.consecutive = 0; p.health.available = true; });
-      return this.proxies[0];
+      return {
+        protocol: parsed.protocol.replace(':', ''),
+        host: parsed.hostname,
+        port: Number(parsed.port || 80),
+        ...(parsed.username
+          ? {
+              auth: {
+                username: decodeURIComponent(parsed.username),
+                password: decodeURIComponent(parsed.password)
+              }
+            }
+          : {})
+      };
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  getNextProxy() {
+    const available = this.proxies.filter(
+      (p) => p.health.available
+    );
+
+    if (!available.length) {
+      return null;
     }
 
-    return available[Math.floor(Math.random() * available.length)];
+    return available[
+      Math.floor(Math.random() * available.length)
+    ];
   }
 
   recordSuccess(proxy) {
-    if (proxy) {
-      proxy.health.success++;
-      proxy.health.consecutive = 0;
-    }
+    if (!proxy) return;
+    proxy.health.success += 1;
+    proxy.health.consecutive = 0;
+    proxy.health.available = true;
   }
 
   recordFailure(proxy) {
-    if (proxy) {
-      proxy.health.failed++;
-      proxy.health.consecutive++;
-      if (proxy.health.consecutive >= 5) {
-        proxy.health.available = false;
-      }
+    if (!proxy) return;
+    proxy.health.failed += 1;
+    proxy.health.consecutive += 1;
+
+    if (proxy.health.consecutive >= 5) {
+      proxy.health.available = false;
     }
   }
 }
 
 const proxyManager = new ProxyManager();
-setInterval(() => proxyManager.healthCheck(), 300000);
 
-// ===== Session Manager with Persistent Cookies =====
+/* =========================
+   Session manager
+   ========================= */
+
 class SessionManager {
   constructor() {
     this.sessions = new Map();
   }
 
+  normalizeUserId(userId) {
+    return String(userId);
+  }
+
   async getOrCreateSession(userId) {
-    const sessionKey = `session:${userId}`;
+    const id = this.normalizeUserId(userId);
+    const sessionKey = `session:${id}`;
 
     try {
       const cached = await redis.get(sessionKey);
-      if (cached) {
-        return JSON.parse(cached);
-      }
-    } catch (e) {}
+      if (cached) return JSON.parse(cached);
+    } catch (_) {}
 
-    if (this.sessions.has(userId)) {
-      return this.sessions.get(userId);
+    if (this.sessions.has(id)) {
+      return this.sessions.get(id);
     }
 
     const session = {
-      userId,
+      userId: id,
       cookies: [],
-      createdAt: new Date()
+      createdAt: new Date().toISOString()
     };
 
-    if (db) {
+    if (db && ObjectId.isValid(id)) {
       try {
-        await db.collection('sessions').insertOne({
-          userId: new ObjectId(userId),
-          cookies: [],
-          createdAt: new Date(),
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-        });
-      } catch (e) {}
+        await db.collection('sessions').updateOne(
+          { userId: new ObjectId(id) },
+          {
+            $setOnInsert: {
+              userId: new ObjectId(id),
+              cookies: [],
+              createdAt: new Date()
+            },
+            $set: {
+              expiresAt: new Date(
+                Date.now() + 7 * 24 * 60 * 60 * 1000
+              )
+            }
+          },
+          { upsert: true }
+        );
+      } catch (_) {}
     }
 
-    this.sessions.set(userId, session);
+    this.sessions.set(id, session);
+
     try {
-      await redis.setex(sessionKey, 604800, JSON.stringify(session));
-    } catch (e) {}
+      await redis.setex(
+        sessionKey,
+        604800,
+        JSON.stringify(session)
+      );
+    } catch (_) {}
 
     return session;
   }
 
   async saveSession(userId, cookies) {
-    const session = { userId, cookies, createdAt: new Date() };
-    this.sessions.set(userId, session);
+    const id = this.normalizeUserId(userId);
+
+    const session = {
+      userId: id,
+      cookies,
+      createdAt: new Date().toISOString()
+    };
+
+    this.sessions.set(id, session);
 
     try {
-      await redis.setex(`session:${userId}`, 604800, JSON.stringify(session));
-    } catch (e) {}
+      await redis.setex(
+        `session:${id}`,
+        604800,
+        JSON.stringify(session)
+      );
+    } catch (_) {}
 
-    if (db) {
+    if (db && ObjectId.isValid(id)) {
       try {
         await db.collection('sessions').updateOne(
-          { userId: new ObjectId(userId) },
-          { $set: { cookies, updatedAt: new Date() } },
+          { userId: new ObjectId(id) },
+          {
+            $set: {
+              cookies,
+              updatedAt: new Date(),
+              expiresAt: new Date(
+                Date.now() + 7 * 24 * 60 * 60 * 1000
+              )
+            }
+          },
           { upsert: true }
         );
-      } catch (e) {}
+      } catch (_) {}
     }
   }
 
   async loadSession(userId) {
-    const sessionKey = `session:${userId}`;
-    
-    try {
-      const cached = await redis.get(sessionKey);
-      if (cached) {
-        return JSON.parse(cached).cookies;
-      }
-    } catch (e) {}
+    const id = this.normalizeUserId(userId);
 
-    if (db) {
+    try {
+      const cached = await redis.get(`session:${id}`);
+      if (cached) {
+        return JSON.parse(cached).cookies || [];
+      }
+    } catch (_) {}
+
+    if (db && ObjectId.isValid(id)) {
       try {
-        const session = await db.collection('sessions').findOne({ userId: new ObjectId(userId) });
-        if (session?.cookies) {
-          return session.cookies;
-        }
-      } catch (e) {}
+        const session = await db
+          .collection('sessions')
+          .findOne({ userId: new ObjectId(id) });
+
+        if (session?.cookies) return session.cookies;
+      } catch (_) {}
     }
 
     return [];
@@ -473,9 +474,12 @@ class SessionManager {
 
 const sessionManager = new SessionManager();
 
-// ===== Browser Context Pool with Proper Proxy Support =====
+/* =========================
+   Browser pool
+   ========================= */
+
 class BrowserContextPool {
-  constructor(browser, poolSize = 3) {
+  constructor(browser, poolSize = 2) {
     this.browser = browser;
     this.poolSize = poolSize;
     this.available = [];
@@ -484,54 +488,62 @@ class BrowserContextPool {
 
   async initialize(proxy = null) {
     for (let i = 0; i < this.poolSize; i++) {
-      const context = await this.createContextWithProxy(proxy);
-      this.available.push(context);
+      const contextData = await this.createContextWithProxy(proxy);
+      this.available.push(contextData);
     }
+
     this.initialized = true;
-    logger.info({ poolSize: this.poolSize, proxy: proxy?.url || 'none' }, '✅ Context pool ready');
+
+    logger.info(
+      {
+        poolSize: this.poolSize,
+        proxy: proxy?.url || 'none'
+      },
+      'Browser context pool ready'
+    );
   }
 
   async createContextWithProxy(proxy = null) {
-    try {
-      const contextOptions = {
-        ignoreHTTPSErrors: true,
-        viewport: { width: 1920, height: 1080 },
-        locale: 'en-US',
-        timezoneId: 'America/New_York',
-        geolocation: { latitude: 40.7128, longitude: -74.0060 },
-        permissions: ['geolocation'],
-        extraHTTPHeaders: {
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'DNT': '1'
-        }
-      };
-
-      // Apply proxy at context creation level
-      if (proxy) {
-        contextOptions.proxy = { server: proxy.url };
+    const contextOptions = {
+      ignoreHTTPSErrors: true,
+      viewport: { width: 1920, height: 1080 },
+      locale: 'en-US',
+      timezoneId: 'America/New_York',
+      geolocation: {
+        latitude: 40.7128,
+        longitude: -74.006
+      },
+      permissions: ['geolocation'],
+      userAgent: this.getRandomUserAgent(),
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Upgrade-Insecure-Requests': '1',
+        'DNT': '1'
       }
+    };
 
-      const context = await this.browser.createBrowserContext(contextOptions);
-      const page = await context.newPage();
-
-      const userAgent = this.getRandomUserAgent();
-      await page.setUserAgent(userAgent);
-
-      // Apply stealth script
-      await page.addInitScript(StealthGenerator.generateScript());
-
-      return { context, page, createdAt: Date.now(), usage: 0, proxy };
-    } catch (error) {
-      logger.error({ error: error.message }, '❌ Context creation failed');
-      throw error;
+    if (proxy?.url) {
+      contextOptions.proxy = {
+        server: proxy.url
+      };
     }
+
+    // IMPORTANT:
+    // Playwright uses browser.newContext(), not createBrowserContext().
+    const context = await this.browser.newContext(contextOptions);
+    const page = await context.newPage();
+
+    await page.addInitScript(
+      StealthGenerator.generateScript()
+    );
+
+    return {
+      context,
+      page,
+      createdAt: Date.now(),
+      usage: 0,
+      proxy
+    };
   }
 
   getRandomUserAgent() {
@@ -540,44 +552,55 @@ class BrowserContextPool {
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
       'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
     ];
+
     return agents[Math.floor(Math.random() * agents.length)];
   }
 
-  async getContext() {
-    if (this.available.length > 0) {
+  async getContext(proxy = null) {
+    if (!proxy && this.available.length) {
       return this.available.pop();
     }
-    return await this.createContextWithProxy(null);
+
+    return this.createContextWithProxy(proxy);
   }
 
-  releaseContext(context) {
-    if (!context) return;
+  async releaseContext(contextData) {
+    if (!contextData) return;
 
-    const age = Date.now() - context.createdAt;
-    if (age > 3600000 || context.usage > 50) {
-      this.closeContext(context);
-    } else {
-      this.available.push(context);
+    const age = Date.now() - contextData.createdAt;
+
+    if (
+      age > 3600000 ||
+      contextData.usage > 50
+    ) {
+      await this.closeContext(contextData);
+      return;
     }
+
+    this.available.push(contextData);
   }
 
-  async closeContext(context) {
+  async closeContext(contextData) {
     try {
-      await context.page.close();
-      await context.context.close();
-    } catch (e) {}
+      await contextData.page?.close();
+    } catch (_) {}
+
+    try {
+      await contextData.context?.close();
+    } catch (_) {}
   }
 
   async closeAll() {
-    for (const ctx of this.available) {
-      await this.closeContext(ctx);
-    }
+    await Promise.all(
+      this.available.map((ctx) => this.closeContext(ctx))
+    );
+
+    this.available = [];
   }
 }
 
-// ===== Browser Pool with Proxy Support =====
 class BrowserPool {
-  constructor(poolSize = 2) {
+  constructor(poolSize = 1) {
     this.poolSize = poolSize;
     this.browsers = [];
     this.contextPools = [];
@@ -588,81 +611,111 @@ class BrowserPool {
       const browser = await chromium.launch({
         headless: true,
         args: [
-          '--disable-blink-features=AutomationControlled',
           '--disable-dev-shm-usage',
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--disable-gpu',
-          '--window-size=1920,1080',
-          '--start-maximized'
+          '--disable-gpu'
         ],
         timeout: 30000
       });
 
       this.browsers.push(browser);
 
-      // Create context pool for this browser
-      const contextPool = new BrowserContextPool(browser, 3);
+      const contextPool = new BrowserContextPool(
+        browser,
+        2
+      );
+
       await contextPool.initialize(null);
-      this.contextPools.push({ pool: contextPool, browser });
+
+      this.contextPools.push({
+        pool: contextPool,
+        browser
+      });
     }
 
-    logger.info({ browsers: this.poolSize }, '✅ Browser pool initialized');
+    logger.info(
+      { browsers: this.poolSize },
+      'Browser pool initialized'
+    );
   }
 
-  async getContextForProxy(proxy) {
-    // Create new context pool for this specific proxy
-    const randomBrowser = this.browsers[Math.floor(Math.random() * this.browsers.length)];
-    
+  async getContextForProxy(proxy = null) {
+    if (!this.browsers.length) {
+      throw new Error('Browser pool is not initialized');
+    }
+
+    const browser =
+      this.browsers[
+        Math.floor(Math.random() * this.browsers.length)
+      ];
+
     const contextOptions = {
       ignoreHTTPSErrors: true,
       viewport: { width: 1920, height: 1080 },
       locale: 'en-US',
-      proxy: proxy ? { server: proxy.url } : undefined,
+      timezoneId: 'America/New_York',
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
       extraHTTPHeaders: {
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
-        'DNT': '1'
+        DNT: '1'
       }
     };
 
-    const context = await randomBrowser.createBrowserContext(contextOptions);
+    if (proxy?.url) {
+      contextOptions.proxy = {
+        server: proxy.url
+      };
+    }
+
+    // IMPORTANT: browser.newContext()
+    const context = await browser.newContext(
+      contextOptions
+    );
+
     const page = await context.newPage();
 
-    await page.setUserAgent([
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-    ][Math.floor(Math.random() * 2)]);
+    await page.addInitScript(
+      StealthGenerator.generateScript()
+    );
 
-    await page.addInitScript(StealthGenerator.generateScript());
-
-    return { context, page, createdAt: Date.now(), usage: 0, proxy };
-  }
-
-  async closeContextPool(contextData) {
-    try {
-      await contextData.page.close();
-      await contextData.context.close();
-    } catch (e) {}
+    return {
+      context,
+      page,
+      createdAt: Date.now(),
+      usage: 0,
+      proxy
+    };
   }
 
   async closeAll() {
-    await Promise.all(this.contextPools.map(cp => cp.pool.closeAll()));
-    await Promise.all(this.browsers.map(b => b.close()));
+    await Promise.all(
+      this.contextPools.map((cp) =>
+        cp.pool.closeAll()
+      )
+    );
+
+    await Promise.all(
+      this.browsers.map((browser) =>
+        browser.close().catch(() => {})
+      )
+    );
+
+    this.browsers = [];
+    this.contextPools = [];
   }
 }
 
-let browserPool = null;
+/* =========================
+   Human interaction helper
+   ========================= */
 
-// ===== Natural Human Interaction with Bezier Curves =====
 class HumanInteractionSimulator {
   static bezier(t, p0, p1, p2, p3) {
     const mt = 1 - t;
+
     return (
       mt * mt * mt * p0 +
       3 * mt * mt * t * p1 +
@@ -671,300 +724,377 @@ class HumanInteractionSimulator {
     );
   }
 
-  static async simulateNaturalMouseMovement(page, fromX, fromY, toX, toY, duration = 1000) {
-    const steps = 10 + Math.floor(Math.random() * 20);
-    const startTime = Date.now();
+  static async simulateNaturalMouseMovement(
+    page,
+    fromX,
+    fromY,
+    toX,
+    toY
+  ) {
+    const steps =
+      10 + Math.floor(Math.random() * 10);
 
-    const cp1x = fromX + (toX - fromX) * 0.3 + (Math.random() - 0.5) * 100;
-    const cp1y = fromY + (toY - fromY) * 0.3 + (Math.random() - 0.5) * 100;
-    const cp2x = fromX + (toX - fromX) * 0.7 + (Math.random() - 0.5) * 100;
-    const cp2y = fromY + (toY - fromY) * 0.7 + (Math.random() - 0.5) * 100;
+    const cp1x =
+      fromX +
+      (toX - fromX) * 0.3 +
+      (Math.random() - 0.5) * 100;
+
+    const cp1y =
+      fromY +
+      (toY - fromY) * 0.3 +
+      (Math.random() - 0.5) * 100;
+
+    const cp2x =
+      fromX +
+      (toX - fromX) * 0.7 +
+      (Math.random() - 0.5) * 100;
+
+    const cp2y =
+      fromY +
+      (toY - fromY) * 0.7 +
+      (Math.random() - 0.5) * 100;
 
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
-      const x = this.bezier(t, fromX, cp1x, cp2x, toX);
-      const y = this.bezier(t, fromY, cp1y, cp2y, toY);
 
-      await page.mouse.move(Math.round(x), Math.round(y));
-      await page.waitForTimeout(Math.random() * 50 + 10);
+      const x = this.bezier(
+        t,
+        fromX,
+        cp1x,
+        cp2x,
+        toX
+      );
+
+      const y = this.bezier(
+        t,
+        fromY,
+        cp1y,
+        cp2y,
+        toY
+      );
+
+      await page.mouse.move(
+        Math.round(x),
+        Math.round(y)
+      );
+
+      await page.waitForTimeout(
+        10 + Math.random() * 30
+      );
     }
   }
 
   static async simulateNaturalBehavior(page) {
     try {
-      const viewportSize = page.viewportSize();
+      const viewport = page.viewportSize() || {
+        width: 1920,
+        height: 1080
+      };
 
-      // Random pause (人间らしい思考時間)
-      await page.waitForTimeout(Math.random() * 2000 + 1000);
+      await page.waitForTimeout(
+        300 + Math.random() * 700
+      );
 
-      // Smooth scroll with natural speed
-      for (let i = 0; i < Math.floor(Math.random() * 2) + 1; i++) {
-        const scrollAmount = Math.floor(Math.random() * 300) + 100;
-        await page.evaluate((amount) => {
-          window.scrollBy({ top: amount, behavior: 'smooth' });
-        }, scrollAmount);
-        await page.waitForTimeout(Math.random() * 1000 + 500);
-      }
+      const scrollAmount =
+        100 + Math.floor(Math.random() * 300);
 
-      // Natural mouse movements using Bezier curves
-      const movements = Math.floor(Math.random() * 2) + 1;
-      for (let i = 0; i < movements; i++) {
-        const fromX = Math.floor(Math.random() * (viewportSize?.width || 1920));
-        const fromY = Math.floor(Math.random() * (viewportSize?.height || 1080));
-        const toX = Math.floor(Math.random() * (viewportSize?.width || 1920));
-        const toY = Math.floor(Math.random() * (viewportSize?.height || 1080));
+      await page.evaluate((amount) => {
+        window.scrollBy({
+          top: amount,
+          behavior: 'smooth'
+        });
+      }, scrollAmount);
 
-        await this.simulateNaturalMouseMovement(page, fromX, fromY, toX, toY, Math.random() * 1000 + 500);
-        await page.waitForTimeout(Math.random() * 800 + 400);
-      }
+      await page.waitForTimeout(
+        300 + Math.random() * 500
+      );
 
-      // Occasionally interact with elements
-      if (Math.random() > 0.5) {
-        try {
-          const clickable = await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('button, a[href], [role="button"]'))
-              .filter(el => {
-                const style = window.getComputedStyle(el);
-                return style.display !== 'none' && el.offsetParent !== null;
-              });
+      const fromX =
+        Math.random() * viewport.width;
+      const fromY =
+        Math.random() * viewport.height;
 
-            if (elements.length === 0) return null;
+      const toX =
+        Math.random() * viewport.width;
+      const toY =
+        Math.random() * viewport.height;
 
-            const el = elements[Math.floor(Math.random() * Math.min(elements.length, 5))];
-            const rect = el.getBoundingClientRect();
-            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-          });
-
-          if (clickable) {
-            await this.simulateNaturalMouseMovement(page, Math.random() * 1920, Math.random() * 1080, clickable.x, clickable.y, 500);
-            await page.click(clickable.x, clickable.y);
-            await page.waitForTimeout(Math.random() * 1000 + 500);
-          }
-        } catch (e) {}
-      }
-    } catch (e) {}
+      await this.simulateNaturalMouseMovement(
+        page,
+        fromX,
+        fromY,
+        toX,
+        toY
+      );
+    } catch (_) {}
   }
 }
 
-// ===== Comprehensive Video Extractor =====
+/* =========================
+   Video extractor
+   ========================= */
+
 class VideoExtractor {
   constructor(name) {
     this.name = name;
   }
 
-  async extract(url, page, proxy, session) {
+  async extract(url, page, _proxy, session) {
     const startTime = Date.now();
+
     const result = {
       source: this.name,
       success: false,
       primaryUrl: null,
-      urls: { m3u8: [], mp4: [], webm: [] },
+      urls: {
+        m3u8: [],
+        mp4: [],
+        webm: []
+      },
       duration: 0,
       strategy: null,
       attempts: 0
     };
 
     try {
-      // Load and apply cookies BEFORE navigation
-      const savedCookies = await sessionManager.loadSession(session.userId);
-      if (savedCookies && savedCookies.length > 0) {
+      const savedCookies =
+        await sessionManager.loadSession(
+          session.userId
+        );
+
+      if (savedCookies.length) {
         try {
-          await page.context().addCookies(savedCookies);
-          logger.info('🍪 Cookies loaded');
-        } catch (e) {
-          logger.warn('⚠️ Cookie loading failed');
-        }
+          await page.context().addCookies(
+            savedCookies
+          );
+        } catch (_) {}
       }
 
       result.attempts++;
 
-      // Strategy 1: Network Interception
-      const networkUrls = await this.networkStrategy(page, url);
+      const networkUrls =
+        await this.networkStrategy(page, url);
+
       if (this.hasUrls(networkUrls)) {
         result.urls = networkUrls;
         result.strategy = 'network';
       }
 
-      // Strategy 2: DOM Parsing
-      if (!result.strategy || !this.hasUrls(result.urls)) {
-        const domUrls = await this.domStrategy(page);
+      if (!this.hasUrls(result.urls)) {
+        const domUrls =
+          await this.domStrategy(page);
+
         if (this.hasUrls(domUrls)) {
           result.urls = domUrls;
           result.strategy = 'dom';
         }
       }
 
-      // Strategy 3: Script Analysis
-      if (!result.strategy || !this.hasUrls(result.urls)) {
-        const scriptUrls = await this.scriptStrategy(page);
+      if (!this.hasUrls(result.urls)) {
+        const scriptUrls =
+          await this.scriptStrategy(page);
+
         if (this.hasUrls(scriptUrls)) {
           result.urls = scriptUrls;
           result.strategy = 'script';
         }
       }
 
-      // Strategy 4: MSE (Advanced)
-      if (!result.strategy || !this.hasUrls(result.urls)) {
-        const mseUrls = await this.advancedMSEStrategy(page);
-        if (mseUrls.length > 0) {
-          result.urls.m3u8 = mseUrls;
-          result.strategy = 'mse';
-        }
-      }
+      if (!this.hasUrls(result.urls)) {
+        const xhrUrls =
+          await this.advancedXHRStrategy(page);
 
-      // Strategy 5: XHR Interception (Advanced)
-      if (!result.strategy || !this.hasUrls(result.urls)) {
-        const xhrUrls = await this.advancedXHRStrategy(page);
-        if (xhrUrls.length > 0) {
+        if (xhrUrls.length) {
           result.urls.m3u8 = xhrUrls;
           result.strategy = 'xhr';
         }
       }
 
-      // Fallback: Wait and retry with human interaction
-      if (!result.strategy || !this.hasUrls(result.urls)) {
+      if (!this.hasUrls(result.urls)) {
         result.attempts++;
-        await page.waitForTimeout(3000);
-        await HumanInteractionSimulator.simulateNaturalBehavior(page);
 
-        const retryUrls = await this.networkStrategy(page, url);
+        await page.waitForTimeout(1000);
+
+        const retryUrls =
+          await this.networkStrategy(page, url);
+
         if (this.hasUrls(retryUrls)) {
           result.urls = retryUrls;
           result.strategy = 'network_retry';
         }
       }
 
-      // Get primary URL
-      const allUrls = [...result.urls.m3u8, ...result.urls.mp4, ...result.urls.webm];
-      if (allUrls.length > 0) {
+      const allUrls = [
+        ...result.urls.m3u8,
+        ...result.urls.mp4,
+        ...result.urls.webm
+      ];
+
+      if (allUrls.length) {
         result.primaryUrl = allUrls[0];
         result.success = true;
       }
 
-      // Save cookies
       try {
-        const cookies = await page.context().cookies();
-        await sessionManager.saveSession(session.userId, cookies);
-        logger.info('💾 Cookies saved');
-      } catch (e) {}
+        const cookies =
+          await page.context().cookies();
 
-      result.duration = (Date.now() - startTime) / 1000;
+        await sessionManager.saveSession(
+          session.userId,
+          cookies
+        );
+      } catch (_) {}
+
+      result.duration =
+        (Date.now() - startTime) / 1000;
+
       return result;
     } catch (error) {
-      logger.warn({ error: error.message }, '⚠️ Extraction error');
-      result.duration = (Date.now() - startTime) / 1000;
+      logger.warn(
+        { error: error.message },
+        'Extraction error'
+      );
+
+      result.duration =
+        (Date.now() - startTime) / 1000;
+
       return result;
     }
   }
 
   hasUrls(urlObj) {
-    return (urlObj.m3u8 && urlObj.m3u8.length > 0) ||
-           (urlObj.mp4 && urlObj.mp4.length > 0) ||
-           (urlObj.webm && urlObj.webm.length > 0);
+    return Boolean(
+      urlObj?.m3u8?.length ||
+      urlObj?.mp4?.length ||
+      urlObj?.webm?.length
+    );
   }
 
   async networkStrategy(page, url) {
-    const intercepted = { m3u8: new Set(), mp4: new Set(), webm: new Set() };
+    const intercepted = {
+      m3u8: new Set(),
+      mp4: new Set(),
+      webm: new Set()
+    };
 
-    await page.route('**/*', (route) => {
-      const reqUrl = route.request().url();
-      if (reqUrl.includes('.m3u8')) intercepted.m3u8.add(reqUrl);
-      else if (reqUrl.includes('.mp4')) intercepted.mp4.add(reqUrl);
-      else if (reqUrl.includes('.webm')) intercepted.webm.add(reqUrl);
+    const handler = (route) => {
+      const requestUrl =
+        route.request().url();
+
+      if (requestUrl.includes('.m3u8')) {
+        intercepted.m3u8.add(requestUrl);
+      } else if (requestUrl.includes('.mp4')) {
+        intercepted.mp4.add(requestUrl);
+      } else if (requestUrl.includes('.webm')) {
+        intercepted.webm.add(requestUrl);
+      }
+
       route.continue().catch(() => {});
-    });
+    };
+
+    await page.route('**/*', handler);
 
     try {
-      await Promise.race([
-        page.goto(url, { waitUntil: 'networkidle', timeout: 60000 }),
-        new Promise((_, r) => setTimeout(() => r(), 55000))
-      ]);
-    } catch (e) {}
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000
+      });
+    } catch (_) {}
 
-    await HumanInteractionSimulator.simulateNaturalBehavior(page);
+    await page.waitForTimeout(2000);
+
+    await HumanInteractionSimulator
+      .simulateNaturalBehavior(page);
+
+    try {
+      await page.unroute('**/*', handler);
+    } catch (_) {}
 
     return {
-      m3u8: Array.from(intercepted.m3u8),
-      mp4: Array.from(intercepted.mp4),
-      webm: Array.from(intercepted.webm)
+      m3u8: [...intercepted.m3u8],
+      mp4: [...intercepted.mp4],
+      webm: [...intercepted.webm]
     };
   }
 
   async domStrategy(page) {
     const content = await page.content();
     const $ = cheerio.load(content);
-    const urls = { m3u8: [], mp4: [], webm: [] };
 
-    $('video').each((i, el) => {
-      const src = $(el).attr('src') || $(el).attr('data-src');
-      if (src) {
-        if (src.includes('.m3u8')) urls.m3u8.push(src);
-        else if (src.includes('.mp4')) urls.mp4.push(src);
-      }
+    const urls = {
+      m3u8: [],
+      mp4: [],
+      webm: []
+    };
+
+    const addUrl = (src) => {
+      if (!src) return;
+
+      try {
+        const absolute = new URLParser(
+          src,
+          page.url()
+        ).href;
+
+        if (absolute.includes('.m3u8')) {
+          urls.m3u8.push(absolute);
+        } else if (absolute.includes('.mp4')) {
+          urls.mp4.push(absolute);
+        } else if (absolute.includes('.webm')) {
+          urls.webm.push(absolute);
+        }
+      } catch (_) {}
+    };
+
+    $('video').each((_, el) => {
+      addUrl(
+        $(el).attr('src') ||
+        $(el).attr('data-src')
+      );
     });
 
-    $('video source').each((i, el) => {
-      const src = $(el).attr('src') || $(el).attr('data-src');
-      if (src) {
-        if (src.includes('.m3u8')) urls.m3u8.push(src);
-        else if (src.includes('.mp4')) urls.mp4.push(src);
-      }
+    $('video source').each((_, el) => {
+      addUrl(
+        $(el).attr('src') ||
+        $(el).attr('data-src')
+      );
     });
 
-    $('iframe').each((i, el) => {
-      const src = $(el).attr('src') || $(el).attr('data-src');
-      if (src && src.length > 10) urls.m3u8.push(src);
-    });
-
-    return urls;
+    return {
+      m3u8: [...new Set(urls.m3u8)],
+      mp4: [...new Set(urls.mp4)],
+      webm: [...new Set(urls.webm)]
+    };
   }
 
   async scriptStrategy(page) {
     const content = await page.content();
-    const urls = { m3u8: [], mp4: [], webm: [] };
 
-    const m3u8Regex = /(https?:\/\/[^"'\s<>{}]*\.m3u8[^"'\s<>{}]*)/gi;
-    const mp4Regex = /(https?:\/\/[^"'\s<>{}]*\.mp4[^"'\s<>{}]*)/gi;
-    const webmRegex = /(https?:\/\/[^"'\s<>{}]*\.webm[^"'\s<>{}]*)/gi;
+    const urls = {
+      m3u8: [],
+      mp4: [],
+      webm: []
+    };
 
-    let match;
-    while ((match = m3u8Regex.exec(content)) !== null) urls.m3u8.push(match[1]);
-    while ((match = mp4Regex.exec(content)) !== null) urls.mp4.push(match[1]);
-    while ((match = webmRegex.exec(content)) !== null) urls.webm.push(match[1]);
+    const patterns = {
+      m3u8:
+        /https?:\/\/[^"'\\s<>{}]+\.m3u8[^"'\\s<>{}]*/gi,
+      mp4:
+        /https?:\/\/[^"'\\s<>{}]+\.mp4[^"'\\s<>{}]*/gi,
+      webm:
+        /https?:\/\/[^"'\\s<>{}]+\.webm[^"'\\s<>{}]*/gi
+    };
+
+    for (const type of Object.keys(patterns)) {
+      const matches =
+        content.match(patterns[type]) || [];
+
+      urls[type] = [
+        ...new Set(matches)
+      ];
+    }
 
     return urls;
-  }
-
-  async advancedMSEStrategy(page) {
-    const result = await page.evaluate(() => {
-      return new Promise((resolve) => {
-        const captured = [];
-
-        try {
-          const originalAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
-          const originalAppendBuffer = SourceBuffer.prototype.appendBuffer;
-
-          MediaSource.prototype.addSourceBuffer = function(mime) {
-            const buffer = originalAddSourceBuffer.call(this, mime);
-            captured.push(this.url || 'unknown_mse_source');
-            return buffer;
-          };
-
-          SourceBuffer.prototype.appendBuffer = function(data) {
-            if (this.sourceURL && !captured.includes(this.sourceURL)) {
-              captured.push(this.sourceURL);
-            }
-            return originalAppendBuffer.call(this, data);
-          };
-
-          setTimeout(() => resolve([...new Set(captured)].filter(Boolean)), 12000);
-        } catch (e) {
-          resolve([]);
-        }
-      });
-    }).catch(() => []);
-
-    return result || [];
   }
 
   async advancedXHRStrategy(page) {
@@ -973,28 +1103,61 @@ class VideoExtractor {
         const urls = [];
 
         const originalFetch = window.fetch;
-        const originalXHROpen = XMLHttpRequest.prototype.open;
+        const originalOpen =
+          XMLHttpRequest.prototype.open;
 
         window.fetch = function(...args) {
-          const url = args[0];
-          if (typeof url === 'string' && (url.includes('.m3u8') || url.includes('manifest'))) {
-            urls.push(url);
-          }
-          return originalFetch.apply(this, args);
+          try {
+            const value = args[0];
+            const requestUrl =
+              typeof value === 'string'
+                ? value
+                : value?.url;
+
+            if (
+              requestUrl &&
+              (requestUrl.includes('.m3u8') ||
+                requestUrl.includes('manifest'))
+            ) {
+              urls.push(requestUrl);
+            }
+          } catch (_) {}
+
+          return originalFetch.apply(
+            this,
+            args
+          );
         };
 
-        XMLHttpRequest.prototype.open = function(method, url) {
-          if (typeof url === 'string' && (url.includes('.m3u8') || url.includes('manifest'))) {
-            urls.push(url);
-          }
-          return originalXHROpen.call(this, method, url);
-        };
+        XMLHttpRequest.prototype.open =
+          function(method, requestUrl, ...rest) {
+            try {
+              if (
+                typeof requestUrl === 'string' &&
+                (requestUrl.includes('.m3u8') ||
+                  requestUrl.includes('manifest'))
+              ) {
+                urls.push(requestUrl);
+              }
+            } catch (_) {}
+
+            return originalOpen.call(
+              this,
+              method,
+              requestUrl,
+              ...rest
+            );
+          };
 
         setTimeout(() => {
           window.fetch = originalFetch;
-          XMLHttpRequest.prototype.open = originalXHROpen;
-          resolve([...new Set(urls)]);
-        }, 10000);
+          XMLHttpRequest.prototype.open =
+            originalOpen;
+
+          resolve([
+            ...new Set(urls)
+          ]);
+        }, 5000);
       });
     }).catch(() => []);
 
@@ -1002,214 +1165,419 @@ class VideoExtractor {
   }
 }
 
-// ===== Result Validator =====
+/* =========================
+   Result validator
+   ========================= */
+
 class ResultValidator {
   static async validate(result) {
-    if (!result?.primaryUrl) return { valid: false, reason: 'NO_URL' };
+    if (!result?.primaryUrl) {
+      return {
+        valid: false,
+        reason: 'NO_URL'
+      };
+    }
+
+    let parsed;
 
     try {
-      new URLParser(result.primaryUrl);
-    } catch (e) {
-      return { valid: false, reason: 'INVALID_URL' };
+      parsed = new URLParser(
+        result.primaryUrl
+      );
+    } catch (_) {
+      return {
+        valid: false,
+        reason: 'INVALID_URL'
+      };
+    }
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return {
+        valid: false,
+        reason: 'INVALID_PROTOCOL'
+      };
     }
 
     try {
-      const response = await axios.get(result.primaryUrl, {
-        timeout: 15000,
-        maxRedirects: 5,
-        maxContentLength: 100000,
-        validateStatus: () => true,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Range': 'bytes=0-10240'
+      const response = await axios.get(
+        result.primaryUrl,
+        {
+          timeout: 15000,
+          maxRedirects: 5,
+          maxContentLength: 100000,
+          validateStatus: () => true,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0'
+          }
         }
-      });
+      );
 
-      if (response.status < 200 || response.status >= 400) {
-        return { valid: false, reason: 'INVALID_STATUS' };
+      if (
+        response.status < 200 ||
+        response.status >= 400
+      ) {
+        return {
+          valid: false,
+          reason: 'INVALID_STATUS'
+        };
       }
 
-      if (result.primaryUrl.includes('.m3u8')) {
-        const content = response.data.toString();
+      if (
+        result.primaryUrl
+          .toLowerCase()
+          .includes('.m3u8')
+      ) {
+        const content =
+          typeof response.data === 'string'
+            ? response.data
+            : String(response.data);
+
         if (!content.includes('#EXTM3U')) {
-          return { valid: false, reason: 'INVALID_M3U8' };
+          return {
+            valid: false,
+            reason: 'INVALID_M3U8'
+          };
         }
       }
 
       return { valid: true };
-    } catch (error) {
+    } catch (_) {
+      // A valid media URL may reject a HEAD/range-style probe.
       return { valid: true };
     }
   }
 }
 
-// ===== SSRF Validator =====
+/* =========================
+   SSRF protection
+   ========================= */
+
 class SSRFValidator {
+  static isPrivateIPv4(ip) {
+    const parts = ip.split('.').map(Number);
+
+    if (
+      parts.length !== 4 ||
+      parts.some((n) => !Number.isInteger(n))
+    ) {
+      return false;
+    }
+
+    const [a, b] = parts;
+
+    return (
+      a === 10 ||
+      a === 127 ||
+      a === 0 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
+  }
+
+  static isPrivateIPv6(hostname) {
+    const h = hostname.toLowerCase();
+
+    return (
+      h === '::1' ||
+      h.startsWith('fc') ||
+      h.startsWith('fd') ||
+      h.startsWith('fe80:')
+    );
+  }
+
   static async validate(urlString) {
+    if (
+      typeof urlString !== 'string' ||
+      urlString.length > 2048
+    ) {
+      return {
+        valid: false,
+        reason: 'URL too long or invalid'
+      };
+    }
+
     try {
       const url = new URLParser(urlString);
 
-      if (!['http:', 'https:'].includes(url.protocol)) {
-        return { valid: false, reason: 'Invalid protocol' };
+      if (
+        !['http:', 'https:'].includes(
+          url.protocol
+        )
+      ) {
+        return {
+          valid: false,
+          reason: 'Invalid protocol'
+        };
       }
 
       const hostname = url.hostname;
-      const privatePatterns = [
-        /^localhost$/i, /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[01])\./, /^192\.168\./, 
-        /^::1$/i, /^fc00:/i, /^fe80:/i, /^169\.254\./
-      ];
 
-      for (const pattern of privatePatterns) {
-        if (pattern.test(hostname)) return { valid: false, reason: 'Private IP' };
+      if (
+        hostname === 'localhost' ||
+        hostname.endsWith('.localhost') ||
+        this.isPrivateIPv4(hostname) ||
+        this.isPrivateIPv6(hostname)
+      ) {
+        return {
+          valid: false,
+          reason: 'Private address'
+        };
       }
 
-      try {
-        const addresses = await dns.resolve4(hostname);
-        for (const addr of addresses) {
-          if (privatePatterns.some(p => p.test(addr))) {
-            return { valid: false, reason: 'DNS rebinding' };
+      const results = await Promise.allSettled([
+        dns.resolve4(hostname),
+        dns.resolve6(hostname)
+      ]);
+
+      for (const result of results) {
+        if (result.status !== 'fulfilled') {
+          continue;
+        }
+
+        for (const address of result.value) {
+          if (
+            this.isPrivateIPv4(address) ||
+            this.isPrivateIPv6(address)
+          ) {
+            return {
+              valid: false,
+              reason: 'Private DNS address'
+            };
           }
         }
-      } catch (e) {
-        return { valid: false, reason: 'DNS resolution failed' };
       }
-
-      if (urlString.length > 2048) return { valid: false, reason: 'URL too long' };
 
       return { valid: true };
     } catch (error) {
-      return { valid: false, reason: error.message };
+      return {
+        valid: false,
+        reason: error.message
+      };
     }
   }
 }
 
-// ===== Cache Manager =====
+/* =========================
+   Cache
+   ========================= */
+
 class CacheManager {
   constructor() {
     this.l1 = new Map();
     this.l1MaxSize = 100;
   }
 
+  hash(url) {
+    return crypto
+      .createHash('sha256')
+      .update(url)
+      .digest('hex');
+  }
+
+  setL1(key, value) {
+    if (this.l1.size >= this.l1MaxSize) {
+      const firstKey =
+        this.l1.keys().next().value;
+
+      if (firstKey) {
+        this.l1.delete(firstKey);
+      }
+    }
+
+    this.l1.set(key, value);
+  }
+
   async get(url) {
-    const urlHash = crypto.createHash('sha256').update(url).digest('hex');
+    const urlHash = this.hash(url);
 
     if (this.l1.has(urlHash)) {
-      metrics.cacheHits.labels('l1').inc();
+      metrics.cacheHits
+        .labels('l1')
+        .inc();
+
       return this.l1.get(urlHash);
     }
 
     try {
-      const redisData = await redis.get(`cache:${urlHash}`);
+      const redisData =
+        await redis.get(
+          `cache:${urlHash}`
+        );
+
       if (redisData) {
-        metrics.cacheHits.labels('l2').inc();
-        const parsed = JSON.parse(redisData);
-        if (this.l1.size < this.l1MaxSize) {
-          this.l1.set(urlHash, parsed);
-        }
+        metrics.cacheHits
+          .labels('l2')
+          .inc();
+
+        const parsed =
+          JSON.parse(redisData);
+
+        this.setL1(urlHash, parsed);
+
         return parsed;
       }
-    } catch (e) {}
+    } catch (_) {}
 
     if (db) {
       try {
-        const dbCache = await db.collection('cache').findOne({
-          contentHash: urlHash,
-          expiresAt: { $gt: new Date() }
-        });
+        const dbCache =
+          await db.collection('cache').findOne({
+            urlHash,
+            expiresAt: {
+              $gt: new Date()
+            }
+          });
 
         if (dbCache) {
-          metrics.cacheHits.labels('l3').inc();
-          if (this.l1.size < this.l1MaxSize) {
-            this.l1.set(urlHash, dbCache.data);
-          }
+          metrics.cacheHits
+            .labels('l3')
+            .inc();
+
+          this.setL1(
+            urlHash,
+            dbCache.data
+          );
+
           return dbCache.data;
         }
-      } catch (e) {}
+      } catch (_) {}
     }
 
     return null;
   }
 
-  async set(url, data, ttl = 259200) {
-    const urlHash = crypto.createHash('sha256').update(url).digest('hex');
-    const contentHash = crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex');
+  async set(url, data, ttl = 86400) {
+    const urlHash = this.hash(url);
 
-    if (this.l1.size < this.l1MaxSize) {
-      this.l1.set(urlHash, data);
-    }
+    this.setL1(urlHash, data);
 
     try {
-      await redis.setex(`cache:${urlHash}`, Math.min(ttl, 86400), JSON.stringify(data));
-    } catch (e) {}
+      await redis.setex(
+        `cache:${urlHash}`,
+        Math.min(ttl, 86400),
+        JSON.stringify(data)
+      );
+    } catch (_) {}
 
     if (db) {
       try {
         await db.collection('cache').updateOne(
-          { contentHash: urlHash },
+          { urlHash },
           {
             $set: {
               url,
-              contentHash,
+              urlHash,
               data,
-              expiresAt: new Date(Date.now() + ttl * 1000),
+              expiresAt: new Date(
+                Date.now() +
+                  ttl * 1000
+              ),
               createdAt: new Date()
             }
           },
           { upsert: true }
         );
-      } catch (e) {}
+      } catch (error) {
+        logger.warn(
+          { error: error.message },
+          'Cache DB save failed'
+        );
+      }
     }
   }
 }
 
-const cacheManager = new CacheManager();
+const cacheManager =
+  new CacheManager();
 
-// ===== Single-Flight =====
+/* =========================
+   Single flight
+   ========================= */
+
 class SingleFlightManager {
   constructor() {
     this.flights = new Map();
   }
 
-  getSingleFlight(url) {
-    const urlHash = crypto.createHash('sha256').update(url).digest('hex');
-    return this.flights.get(urlHash);
+  hash(url) {
+    return crypto
+      .createHash('sha256')
+      .update(url)
+      .digest('hex');
   }
 
-  setSingleFlight(url, promise) {
-    const urlHash = crypto.createHash('sha256').update(url).digest('hex');
-    this.flights.set(urlHash, promise);
-    setTimeout(() => this.flights.delete(urlHash), 300000);
-    return urlHash;
+  get(url) {
+    return this.flights.get(
+      this.hash(url)
+    );
   }
 
-  removeSingleFlight(url) {
-    const urlHash = crypto.createHash('sha256').update(url).digest('hex');
-    this.flights.delete(urlHash);
+  set(url, promise) {
+    const key = this.hash(url);
+
+    this.flights.set(
+      key,
+      promise
+    );
+
+    promise.finally(() => {
+      if (
+        this.flights.get(key) ===
+        promise
+      ) {
+        this.flights.delete(key);
+      }
+    }).catch(() => {});
+
+    return key;
+  }
+
+  remove(url) {
+    this.flights.delete(
+      this.hash(url)
+    );
   }
 }
 
-const singleFlight = new SingleFlightManager();
+const singleFlight =
+  new SingleFlightManager();
 
-// ===== Circuit Breaker =====
+/* =========================
+   Circuit breaker
+   ========================= */
+
 class CircuitBreaker {
   constructor() {
     this.state = 'CLOSED';
     this.failureCount = 0;
     this.successCount = 0;
-    this.nextAttempt = null;
+    this.nextAttempt = 0;
   }
 
   async execute(fn) {
-    if (this.state === 'OPEN') {
-      if (Date.now() < this.nextAttempt) {
-        throw new Error('Circuit breaker OPEN');
+    if (
+      this.state === 'OPEN'
+    ) {
+      if (
+        Date.now() <
+        this.nextAttempt
+      ) {
+        throw new Error(
+          'Circuit breaker OPEN'
+        );
       }
+
       this.state = 'HALF_OPEN';
     }
 
     try {
-      const result = await fn();
+      const result =
+        await fn();
+
       this.onSuccess();
+
       return result;
     } catch (error) {
       this.onFailure();
@@ -1219,9 +1587,15 @@ class CircuitBreaker {
 
   onSuccess() {
     this.failureCount = 0;
-    if (this.state === 'HALF_OPEN') {
+
+    if (
+      this.state === 'HALF_OPEN'
+    ) {
       this.successCount++;
-      if (this.successCount >= 2) {
+
+      if (
+        this.successCount >= 2
+      ) {
         this.state = 'CLOSED';
         this.successCount = 0;
       }
@@ -1231,402 +1605,995 @@ class CircuitBreaker {
   onFailure() {
     this.failureCount++;
     this.successCount = 0;
-    if (this.failureCount >= 5) {
+
+    if (
+      this.failureCount >= 5
+    ) {
       this.state = 'OPEN';
-      this.nextAttempt = Date.now() + 60000;
+      this.nextAttempt =
+        Date.now() + 60000;
     }
   }
 }
 
-const circuitBreaker = new CircuitBreaker();
+const circuitBreaker =
+  new CircuitBreaker();
 
-// ===== Queue =====
-const extractionQueue = new Queue('extraction', REDIS_URL, {
-  settings: {
-    stalledInterval: 10000,
-    maxStalledCount: 2,
-    lockDuration: 90000,
-    lockRenewTime: 45000
-  }
-});
+/* =========================
+   Queue
+   ========================= */
 
-// ===== Middleware =====
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+const extractionQueue =
+  new Queue('extraction', REDIS_URL, {
+    settings: {
+      stalledInterval: 10000,
+      maxStalledCount: 2,
+      lockDuration: 90000,
+      lockRenewTime: 45000
+    }
+  });
+
+/* =========================
+   Middleware
+   ========================= */
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+  })
+);
+
 app.use(mongoSanitize());
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(
+  express.json({
+    limit: '10mb'
+  })
+);
 
 app.use((req, res, next) => {
   const start = Date.now();
-  res.on('finish', () => {
-    const duration = (Date.now() - start) / 1000;
-    metrics.httpDuration.labels(req.method, req.path, res.statusCode).observe(duration);
-  });
+
   req.requestId = uuidv4();
+
+  res.on('finish', () => {
+    const duration =
+      (Date.now() - start) / 1000;
+
+    metrics.httpDuration
+      .labels(
+        req.method,
+        req.path,
+        String(res.statusCode)
+      )
+      .observe(duration);
+  });
+
   next();
 });
 
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  keyGenerator: (req) => req.user?.id || req.ip
-});
+const limiter =
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false
+  });
 
-app.use('/api/v1/', limiter);
+app.use(
+  '/api/v1/',
+  limiter
+);
 
-const verifyToken = async (req, res, next) => {
+/* =========================
+   Auth
+   ========================= */
+
+async function verifyToken(
+  req,
+  res,
+  next
+) {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ success: false, error: 'No token' });
+    const header =
+      req.headers.authorization || '';
 
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const token =
+      header.startsWith('Bearer ')
+        ? header.slice(7)
+        : null;
 
-    if (db) {
-      const user = await db.collection('users').findOne({ apiKey: decoded.apiKey });
-      if (!user) return res.status(403).json({ success: false, error: 'User not found' });
-      req.user = user;
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'No token'
+      });
     }
 
+    const decoded =
+      jwt.verify(
+        token,
+        JWT_SECRET
+      );
+
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        error: 'Database unavailable'
+      });
+    }
+
+    const user =
+      await db.collection('users').findOne({
+        apiKey: decoded.apiKey
+      });
+
+    if (!user) {
+      return res.status(403).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    req.user = user;
+
     next();
-  } catch (error) {
-    return res.status(403).json({ success: false, error: 'Invalid token' });
+  } catch (_) {
+    return res.status(403).json({
+      success: false,
+      error: 'Invalid token'
+    });
   }
-};
+}
+
+/* =========================
+   Swagger
+   ========================= */
 
 const swaggerDocs = {
   openapi: '3.0.0',
-  info: { title: 'Vd-Pro Video Extraction API', version: '1.0.0' },
-  servers: [{ url: '/api/v1' }],
+  info: {
+    title:
+      'Vd-Pro Video Extraction API',
+    version: '2.0.0'
+  },
+  servers: [
+    {
+      url: '/api/v1'
+    }
+  ],
   paths: {
     '/extract': {
       get: {
-        summary: 'Extract video (Async)',
-        parameters: [{ name: 'url', in: 'query', required: true, schema: { type: 'string' } }],
-        responses: { '202': { description: 'Job queued' } }
+        summary:
+          'Extract video asynchronously',
+        parameters: [
+          {
+            name: 'url',
+            in: 'query',
+            required: true,
+            schema: {
+              type: 'string'
+            }
+          }
+        ],
+        responses: {
+          '202': {
+            description:
+              'Job queued'
+          }
+        }
       }
     }
   }
 };
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+app.use(
+  '/api-docs',
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerDocs)
+);
 
-// ===== Routes =====
+/* =========================
+   Routes
+   ========================= */
 
-app.get('/api/v1/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    redis: redis.status,
-    mongodb: db ? 'connected' : 'disconnected',
-    name: 'Vd-Pro'
-  });
-});
-
-app.get('/api/v1/metrics', (req, res) => {
-  res.set('Content-Type', prometheus.register.contentType);
-  res.end(prometheus.register.metrics());
-});
-
-app.post('/api/v1/auth/register', async (req, res) => {
-  try {
-    const { email, password, plan = 'free' } = req.body;
-
-    if (!email || !password) return res.status(400).json({ success: false, error: 'Missing fields' });
-    if (!db) return res.status(503).json({ success: false, error: 'Service unavailable' });
-
-    const existing = await db.collection('users').findOne({ email });
-    if (existing) return res.status(400).json({ success: false, error: 'Email already registered' });
-
-    const apiKey = crypto.randomBytes(32).toString('hex');
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    await db.collection('users').insertOne({
-      email,
-      password: hashedPassword,
-      apiKey,
-      plan,
-      createdAt: new Date()
+app.get(
+  '/api/v1/health',
+  async (_req, res) => {
+    res.json({
+      status: 'healthy',
+      timestamp:
+        new Date().toISOString(),
+      redis: redis.status,
+      mongodb:
+        db
+          ? 'connected'
+          : 'disconnected',
+      browser:
+        browserPool
+          ? 'ready'
+          : 'not_ready',
+      name: 'Vd-Pro'
     });
-
-    const token = jwt.sign({ apiKey }, JWT_SECRET, { expiresIn: '30d' });
-
-    res.status(201).json({ success: true, apiKey, token, plan });
-  } catch (error) {
-    logger.error({ error: error.message }, 'Register failed');
-    res.status(500).json({ success: false, error: error.message });
   }
-});
+);
 
-app.get('/api/v1/extract', limiter, verifyToken, async (req, res) => {
-  const { url } = req.query;
-
-  try {
-    const validation = await SSRFValidator.validate(url);
-    if (!validation.valid) {
-      return res.status(400).json({ success: false, error: validation.reason });
-    }
-
-    const cached = await cacheManager.get(url);
-    if (cached) {
-      return res.json({ success: true, fromCache: true, ...cached });
-    }
-
-    const existing = singleFlight.getSingleFlight(url);
-    if (existing) {
-      logger.info('🔄 Request deduplicated');
-      return res.status(202).json({ success: true, message: 'Processing (deduplicated)' });
-    }
-
-    const job = await extractionQueue.add(
-      { url, userId: req.user._id },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-        priority: req.user.plan === 'enterprise' ? 1 : 10,
-        timeout: 180000
-      }
-    );
-
-    const promise = job.finished();
-    singleFlight.setSingleFlight(url, promise);
-
-    res.status(202).json({
-      success: true,
-      jobId: job.id,
-      statusUrl: `/api/v1/jobs/${job.id}`
-    });
-  } catch (error) {
-    logger.error({ error: error.message }, 'Extract failed');
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.get('/api/v1/jobs/:jobId', verifyToken, async (req, res) => {
-  try {
-    const job = await extractionQueue.getJob(req.params.jobId);
-    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
-
-    const state = await job.getState();
-    const result = state === 'completed' ? job._returnvalue : null;
-
-    res.json({ success: true, jobId: job.id, state, result });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.post('/api/v1/jobs/:jobId/retry', verifyToken, async (req, res) => {
-  try {
-    if (!db) return res.status(503).json({ success: false, error: 'Database unavailable' });
-
-    const failedJob = await db.collection('failed_jobs').findOne({ jobId: req.params.jobId });
-    if (!failedJob) return res.status(404).json({ success: false, error: 'Failed job not found' });
-
-    const newJob = await extractionQueue.add(
-      { url: failedJob.jobData.url, userId: req.user._id },
-      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } }
-    );
-
-    res.status(202).json({
-      success: true,
-      newJobId: newJob.id,
-      statusUrl: `/api/v1/jobs/${newJob.id}`
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ===== Queue Processing =====
-extractionQueue.process(8, async (job) => {
-  let contextData = null;
-
-  try {
-    const proxy = proxyManager.getNextProxy();
-    const session = await sessionManager.getOrCreateSession(job.data.userId);
-
-    // Get context with proxy support
-    contextData = await browserPool.getContextForProxy(proxy);
-    const { context, page } = contextData;
-    contextData.usage++;
-
-    if (proxy) {
-      logger.info({ proxy: proxy.url }, '🔀 Using proxy');
-      proxyManager.recordSuccess(proxy);
-    } else {
-      logger.info('No proxy available');
-    }
-
-    // Execute extraction
-    const extractor = new VideoExtractor('vd-pro');
-    const result = await circuitBreaker.execute(async () => {
-      return await extractor.extract(job.data.url, page, proxy, { userId: job.data.userId });
-    });
-
-    metrics.extractionDuration.labels(result.success ? 'success' : 'failure').observe(result.duration);
-
-    if (result.success) {
-      metrics.sourceSuccess.inc();
-
-      const isValid = await ResultValidator.validate(result);
-      if (!isValid.valid) {
-        logger.warn({ reason: isValid.reason }, '⚠️ Validation failed');
-      }
-
-      if (db) {
-        try {
-          await db.collection('extractions').insertOne({
-            extractionId: uuidv4(),
-            jobId: job.id,
-            userId: new ObjectId(job.data.userId),
-            url: job.data.url,
-            result,
-            strategy: result.strategy,
-            attempts: result.attempts,
-            createdAt: new Date(),
-            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-          });
-
-          await cacheManager.set(job.data.url, result);
-        } catch (e) {
-          logger.warn({ error: e.message }, '⚠️ Save failed');
-        }
-      }
-    } else {
-      metrics.sourceFailure.labels('extraction_failed').inc();
-
-      if (db) {
-        try {
-          await db.collection('diagnostics').insertOne({
-            jobId: job.id,
-            url: job.data.url,
-            strategy: result.strategy,
-            attempts: result.attempts,
-            duration: result.duration,
-            createdAt: new Date()
-          });
-        } catch (e) {}
-      }
-    }
-
-    singleFlight.removeSingleFlight(job.data.url);
-    return result;
-  } catch (error) {
-    logger.error({ jobId: job.id, error: error.message }, '❌ Job failed');
-
-    if (db) {
-      try {
-        await db.collection('failed_jobs').insertOne({
-          jobId: job.id,
-          jobData: job.data,
-          error: error.message,
-          attempts: job.attemptsMade,
-          createdAt: new Date()
-        });
-      } catch (e) {}
-    }
-
-    throw error;
-  } finally {
-    if (contextData) {
-      try {
-        await contextData.page.close();
-        await contextData.context.close();
-      } catch (e) {}
-    }
-  }
-});
-
-// ===== WebSocket =====
-const wss = new WebSocket.Server({ server: httpServer });
-
-wss.on('connection', (ws) => {
-  ws.on('message', async (message) => {
+app.get(
+  '/api/v1/metrics',
+  async (_req, res) => {
     try {
-      const data = JSON.parse(message);
+      res.set(
+        'Content-Type',
+        prometheus.register
+          .contentType
+      );
 
-      if (data.type === 'job_status' && data.jobId) {
-        const job = await extractionQueue.getJob(data.jobId);
-        if (job) {
-          const state = await job.getState();
-          ws.send(JSON.stringify({ type: 'job_update', jobId: data.jobId, state }));
+      res.end(
+        await prometheus.register.metrics()
+      );
+    } catch (error) {
+      res.status(500).end(
+        error.message
+      );
+    }
+  }
+);
+
+app.post(
+  '/api/v1/auth/register',
+  async (req, res) => {
+    try {
+      const {
+        email,
+        password,
+        plan = 'free'
+      } = req.body || {};
+
+      if (
+        typeof email !== 'string' ||
+        typeof password !== 'string' ||
+        password.length < 8
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'Valid email and password (minimum 8 characters) are required'
+        });
+      }
+
+      if (!db) {
+        return res.status(503).json({
+          success: false,
+          error:
+            'Service unavailable'
+        });
+      }
+
+      const normalizedEmail =
+        email.trim().toLowerCase();
+
+      const existing =
+        await db.collection('users').findOne({
+          email:
+            normalizedEmail
+        });
+
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          error:
+            'Email already registered'
+        });
+      }
+
+      const apiKey =
+        crypto.randomBytes(32)
+          .toString('hex');
+
+      const hashedPassword =
+        await bcrypt.hash(
+          password,
+          12
+        );
+
+      await db.collection('users')
+        .insertOne({
+          email:
+            normalizedEmail,
+          password:
+            hashedPassword,
+          apiKey,
+          plan:
+            ['free', 'pro', 'enterprise']
+              .includes(plan)
+              ? plan
+              : 'free',
+          createdAt:
+            new Date()
+        });
+
+      const token =
+        jwt.sign(
+          { apiKey },
+          JWT_SECRET,
+          {
+            expiresIn: '30d'
+          }
+        );
+
+      res.status(201).json({
+        success: true,
+        apiKey,
+        token,
+        plan:
+          ['free', 'pro', 'enterprise']
+            .includes(plan)
+            ? plan
+            : 'free'
+      });
+    } catch (error) {
+      logger.error(
+        { error: error.message },
+        'Register failed'
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          'Registration failed'
+      });
+    }
+  }
+);
+
+app.get(
+  '/api/v1/extract',
+  verifyToken,
+  async (req, res) => {
+    const { url } =
+      req.query;
+
+    try {
+      const validation =
+        await SSRFValidator.validate(
+          url
+        );
+
+      if (!validation.valid) {
+        return res.status(400).json({
+          success: false,
+          error:
+            validation.reason
+        });
+      }
+
+      const cached =
+        await cacheManager.get(
+          url
+        );
+
+      if (cached) {
+        return res.json({
+          success: true,
+          fromCache: true,
+          ...cached
+        });
+      }
+
+      const existing =
+        singleFlight.get(
+          url
+        );
+
+      if (existing) {
+        return res.status(202).json({
+          success: true,
+          message:
+            'Processing (deduplicated)'
+        });
+      }
+
+      const job =
+        await extractionQueue.add(
+          {
+            url,
+            userId:
+              String(req.user._id)
+          },
+          {
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 2000
+            },
+            priority:
+              req.user.plan ===
+              'enterprise'
+                ? 1
+                : 10,
+            timeout: 180000
+          }
+        );
+
+      const promise =
+        job.finished();
+
+      singleFlight.set(
+        url,
+        promise
+      );
+
+      res.status(202).json({
+        success: true,
+        jobId: job.id,
+        statusUrl:
+          `/api/v1/jobs/${job.id}`
+      });
+    } catch (error) {
+      logger.error(
+        { error: error.message },
+        'Extract failed'
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+app.get(
+  '/api/v1/jobs/:jobId',
+  verifyToken,
+  async (req, res) => {
+    try {
+      const job =
+        await extractionQueue.getJob(
+          req.params.jobId
+        );
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error:
+            'Job not found'
+        });
+      }
+
+      const state =
+        await job.getState();
+
+      const result =
+        state === 'completed'
+          ? job.returnvalue
+          : null;
+
+      res.json({
+        success: true,
+        jobId: job.id,
+        state,
+        result
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+app.post(
+  '/api/v1/jobs/:jobId/retry',
+  verifyToken,
+  async (req, res) => {
+    try {
+      if (!db) {
+        return res.status(503).json({
+          success: false,
+          error:
+            'Database unavailable'
+        });
+      }
+
+      const failedJob =
+        await db
+          .collection('failed_jobs')
+          .findOne({
+            jobId:
+              req.params.jobId
+          });
+
+      if (!failedJob) {
+        return res.status(404).json({
+          success: false,
+          error:
+            'Failed job not found'
+        });
+      }
+
+      const newJob =
+        await extractionQueue.add(
+          {
+            url:
+              failedJob.jobData.url,
+            userId:
+              String(req.user._id)
+          },
+          {
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 2000
+            }
+          }
+        );
+
+      res.status(202).json({
+        success: true,
+        newJobId:
+          newJob.id,
+        statusUrl:
+          `/api/v1/jobs/${newJob.id}`
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+/* =========================
+   Queue worker
+   ========================= */
+
+extractionQueue.process(
+  4,
+  async (job) => {
+    let contextData = null;
+
+    try {
+      if (!browserPool) {
+        throw new Error(
+          'Browser pool is not ready'
+        );
+      }
+
+      const proxy =
+        proxyManager.getNextProxy();
+
+      const session =
+        await sessionManager
+          .getOrCreateSession(
+            job.data.userId
+          );
+
+      contextData =
+        await browserPool
+          .getContextForProxy(
+            proxy
+          );
+
+      contextData.usage++;
+
+      const extractor =
+        new VideoExtractor(
+          'vd-pro'
+        );
+
+      const result =
+        await circuitBreaker.execute(
+          () =>
+            extractor.extract(
+              job.data.url,
+              contextData.page,
+              proxy,
+              {
+                userId:
+                  String(
+                    job.data.userId
+                  )
+              }
+            )
+        );
+
+      metrics.extractionDuration
+        .labels(
+          result.success
+            ? 'success'
+            : 'failure'
+        )
+        .observe(
+          result.duration
+        );
+
+      if (result.success) {
+        metrics.sourceSuccess.inc();
+
+        const validation =
+          await ResultValidator
+            .validate(result);
+
+        if (!validation.valid) {
+          logger.warn(
+            {
+              reason:
+                validation.reason
+            },
+            'Result validation failed'
+          );
+        }
+
+        if (proxy) {
+          proxyManager.recordSuccess(
+            proxy
+          );
+        }
+
+        if (db) {
+          await db
+            .collection('extractions')
+            .insertOne({
+              extractionId:
+                uuidv4(),
+              jobId:
+                String(job.id),
+              userId:
+                ObjectId.isValid(
+                  String(
+                    job.data.userId
+                  )
+                )
+                  ? new ObjectId(
+                      String(
+                        job.data.userId
+                      )
+                    )
+                  : null,
+              url:
+                job.data.url,
+              result,
+              strategy:
+                result.strategy,
+              attempts:
+                result.attempts,
+              createdAt:
+                new Date(),
+              expiresAt:
+                new Date(
+                  Date.now() +
+                    7 *
+                      24 *
+                      60 *
+                      60 *
+                      1000
+                )
+            });
+
+          await cacheManager.set(
+            job.data.url,
+            result
+          );
+        }
+      } else {
+        metrics.sourceFailure
+          .labels(
+            'extraction_failed'
+          )
+          .inc();
+
+        if (proxy) {
+          proxyManager.recordFailure(
+            proxy
+          );
+        }
+
+        if (db) {
+          await db
+            .collection('diagnostics')
+            .insertOne({
+              jobId:
+                String(job.id),
+              url:
+                job.data.url,
+              strategy:
+                result.strategy,
+              attempts:
+                result.attempts,
+              duration:
+                result.duration,
+              createdAt:
+                new Date()
+            });
         }
       }
-    } catch (error) {
-      ws.send(JSON.stringify({ type: 'error', message: error.message }));
-    }
-  });
-});
 
-// ===== Graceful Shutdown =====
-const gracefulShutdown = async () => {
-  logger.info('🛑 Shutting down...');
+      return result;
+    } catch (error) {
+      logger.error(
+        {
+          jobId: job.id,
+          error: error.message
+        },
+        'Job failed'
+      );
+
+      if (db) {
+        try {
+          await db
+            .collection('failed_jobs')
+            .insertOne({
+              jobId:
+                String(job.id),
+              jobData:
+                job.data,
+              error:
+                error.message,
+              attempts:
+                job.attemptsMade,
+              createdAt:
+                new Date()
+            });
+        } catch (_) {}
+      }
+
+      throw error;
+    } finally {
+      if (contextData) {
+        try {
+          await contextData.page.close();
+        } catch (_) {}
+
+        try {
+          await contextData.context.close();
+        } catch (_) {}
+      }
+    }
+  }
+);
+
+/* =========================
+   WebSocket
+   ========================= */
+
+const wss =
+  new WebSocket.Server({
+    server: httpServer
+  });
+
+wss.on(
+  'connection',
+  (ws) => {
+    ws.on(
+      'message',
+      async (message) => {
+        try {
+          const data =
+            JSON.parse(
+              message.toString()
+            );
+
+          if (
+            data.type ===
+              'job_status' &&
+            data.jobId
+          ) {
+            const job =
+              await extractionQueue
+                .getJob(
+                  data.jobId
+                );
+
+            if (!job) {
+              ws.send(
+                JSON.stringify({
+                  type:
+                    'error',
+                  message:
+                    'Job not found'
+                })
+              );
+              return;
+            }
+
+            const state =
+              await job.getState();
+
+            ws.send(
+              JSON.stringify({
+                type:
+                  'job_update',
+                jobId:
+                  data.jobId,
+                state
+              })
+            );
+          }
+        } catch (error) {
+          try {
+            ws.send(
+              JSON.stringify({
+                type:
+                  'error',
+                message:
+                  error.message
+              })
+            );
+          } catch (_) {}
+        }
+      }
+    );
+  }
+);
+
+/* =========================
+   Error handler
+   ========================= */
+
+app.use(
+  (error, _req, res, _next) => {
+    logger.error(
+      {
+        error:
+          error.message
+      },
+      'Unhandled request error'
+    );
+
+    if (res.headersSent) {
+      return;
+    }
+
+    res.status(500).json({
+      success: false,
+      error:
+        'Internal server error'
+    });
+  }
+);
+
+/* =========================
+   Shutdown
+   ========================= */
+
+let shuttingDown = false;
+
+async function gracefulShutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  logger.info(
+    'Shutting down...'
+  );
+
+  if (proxyHealthTimer) {
+    clearInterval(
+      proxyHealthTimer
+    );
+  }
 
   try {
-    await new Promise(resolve => httpServer.close(resolve));
+    await new Promise(
+      (resolve) =>
+        httpServer.close(
+          () => resolve()
+        )
+    );
+  } catch (_) {}
+
+  try {
     await browserPool?.closeAll();
-    await redis.quit();
+  } catch (_) {}
+
+  try {
     await extractionQueue.close();
-    if (mongoClient) await mongoClient.close();
-    wss.close();
+  } catch (_) {}
 
-    logger.info('✅ Shutdown complete');
-    process.exit(0);
-  } catch (error) {
-    logger.error({ error: error.message }, '❌ Shutdown error');
-    process.exit(1);
-  }
-};
+  try {
+    await redis.quit();
+  } catch (_) {}
 
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown);
+  try {
+    if (mongoClient) {
+      await mongoClient.close();
+    }
+  } catch (_) {}
 
-// ===== Start =====
+  try {
+    await new Promise(
+      (resolve) =>
+        wss.close(() => resolve())
+    );
+  } catch (_) {}
+
+  logger.info(
+    'Shutdown complete'
+  );
+
+  process.exit(0);
+}
+
+process.on(
+  'SIGTERM',
+  gracefulShutdown
+);
+
+process.on(
+  'SIGINT',
+  gracefulShutdown
+);
+
+/* =========================
+   Start
+   ========================= */
+
 (async () => {
   try {
-    logger.info('🚀 Starting Vd-Pro...');
+    logger.info(
+      'Starting Vd-Pro...'
+    );
 
     try {
       await connectDatabase();
-    } catch (e) {
-      logger.warn('⚠️ MongoDB unavailable');
+    } catch (error) {
+      logger.warn(
+        {
+          error:
+            error.message
+        },
+        'MongoDB unavailable; continuing without MongoDB'
+      );
     }
 
-    browserPool = new BrowserPool(2);
+    browserPool =
+      new BrowserPool(1);
+
     await browserPool.initialize();
 
-    setInterval(() => proxyManager.healthCheck(), 300000);
+    proxyHealthTimer =
+      setInterval(
+        () =>
+          proxyManager
+            .healthCheck()
+            .catch(() => {}),
+        300000
+      );
 
-    httpServer.listen(PORT, () => {
-      logger.info(`
-╔════════════════════════════════════════════════════════════════════════╗
-║               🚀 VD-PRO VIDEO EXTRACTION PLATFORM v2.0                ║
-╠════════════════════════════════════════════════════════════════════════╣
-║  ✅ ALL ISSUES FIXED:
-║  ✓ Proxy fully integrated (Per-context, real application)
-║  ✓ Session management (Cookies applied BEFORE navigation)
-║  ✓ Advanced stealth (Dynamic fingerprints + spoofing)
-║  ✓ Natural human interaction (Bezier curves + realistic timing)
-║  ✓ Comprehensive strategies (5 main + advanced fallbacks)
-║  ✓ Enhanced MSE/XHR detection
-║  ✓ Single-flight deduplication
-║  ✓ 3-level cache system
-║  ✓ Circuit breaker pattern
-║
-║  📊 ENDPOINTS:
-║  GET  /api/v1/health
-║  GET  /api/v1/metrics
-║  POST /api/v1/auth/register
-║  GET  /api/v1/extract?url=... (202 Async)
-║  GET  /api/v1/jobs/:jobId
-║  POST /api/v1/jobs/:jobId/retry
-║
-║  ✨ ZERO ERRORS - PRODUCTION READY
-╚════════════════════════════════════════════════════════════════════════╝
-      `);
-    });
+    httpServer.listen(
+      PORT,
+      '0.0.0.0',
+      () => {
+        logger.info(
+          {
+            port: PORT
+          },
+          'Vd-Pro server is running'
+        );
+      }
+    );
   } catch (error) {
-    logger.error({ error: error.message }, '💥 Startup error');
+    logger.error(
+      {
+        error:
+          error.message,
+        stack:
+          error.stack
+      },
+      'Startup error'
+    );
+
+    try {
+      await browserPool?.closeAll();
+    } catch (_) {}
+
     process.exit(1);
   }
 })();
