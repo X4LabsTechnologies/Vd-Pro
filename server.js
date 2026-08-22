@@ -1,6 +1,6 @@
 import express from 'express';
 import { chromium } from 'playwright';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio'; 
 import cors from 'cors';
 import { config } from 'dotenv';
 import rateLimit from 'express-rate-limit';
