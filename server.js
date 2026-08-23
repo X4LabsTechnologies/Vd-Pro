@@ -642,10 +642,16 @@ let browserPool = null;
 async function tryClickPlay(page) {
   const selectors = [
     'button[aria-label*="Play" i]',
+    '[title*="Play" i]',
+    '[data-testid*="play" i]',
     '.vjs-big-play-button',
     '.plyr__control--overlaid',
     '.jw-icon-display',
+    '.jw-display-icon-container',
+    '.html5-video-player .ytp-large-play-button',
     'button.play',
+    '[class*="play-button" i]',
+    '[class*="playButton" i]',
     'video'
   ];
   let clicked = false;
@@ -855,7 +861,8 @@ class VideoExtractor {
       } catch (e) {}
 
       try {
-        await page.waitForTimeout(400);
+        await page.waitForLoadState('networkidle', { timeout: Math.min(5000, NAV_TIMEOUT_MS) }).catch(() => {});
+        await page.waitForTimeout(deep ? 900 : 500);
         await page.evaluate(() => window.scrollBy(0, 280));
       } catch (e) {}
 
@@ -872,16 +879,25 @@ class VideoExtractor {
       try {
         const mediaUrls = await page.evaluate(() => {
           const out = [];
-          document.querySelectorAll('video').forEach((v) => {
-            if (v.currentSrc) out.push(v.currentSrc);
-            if (v.src) out.push(v.src);
-            v.querySelectorAll('source').forEach((s) => {
+            document.querySelectorAll('video, audio').forEach((v) => {
+              if (v.currentSrc) out.push(v.currentSrc);
+              if (v.src) out.push(v.src);
+              v.querySelectorAll('source').forEach((s) => {
+                if (s.src) out.push(s.src);
+              });
+            });
+            document.querySelectorAll('source').forEach((s) => {
               if (s.src) out.push(s.src);
             });
-          });
           document.querySelectorAll('track').forEach((t) => {
             if (t.src) out.push(t.src);
           });
+          document.querySelectorAll('link[rel="preload"][as="video"], link[rel="preload"][as="audio"]').forEach((l) => {
+            if (l.href) out.push(l.href);
+          });
+          try {
+            performance.getEntriesByType('resource').forEach((entry) => out.push(entry.name));
+          } catch (e) {}
           (window.__vdCaptured || []).forEach((x) => out.push(x.url));
           return out;
         });
