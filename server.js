@@ -185,20 +185,43 @@ class SSRFValidator {
 function resolveUrl(base, rel) {
   try {
     if (!rel) return null;
-    if (/^(https?:|blob:|data:)/i.test(rel)) return rel;
-    if (rel.startsWith('//')) return `https:${rel}`;
-    return new URL(rel, base).href;
+    const value = String(rel).trim().replace(/\\u0026/gi, '&').replace(/\\u003d/gi, '=').replace(/\\\//g, '/');
+    if (/^(https?:|blob:|data:)/i.test(value)) return value;
+    if (value.startsWith('//')) return `https:${value}`;
+    return new URL(value, base).href;
   } catch (e) {
     return null;
   }
 }
 
+function extractUrlCandidates(value = '', base = '') {
+  if (!value || typeof value !== 'string') return [];
+  const decoded = value
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\u003a/gi, ':')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\\//g, '/');
+  const found = new Set();
+  const add = (candidate) => {
+    const cleaned = String(candidate || '').replace(/[\\"'<>`),;]+$/g, '').trim();
+    if (!cleaned || /^(javascript:|mailto:|#)/i.test(cleaned)) return;
+    const absolute = resolveUrl(base, cleaned);
+    if (absolute && /^https?:/i.test(absolute)) found.add(absolute);
+  };
+  const re = /(?:https?:)?\/\/[^\s"'<>`\\]+/gi;
+  let match;
+  while ((match = re.exec(decoded)) !== null) add(match[0]);
+  if (base && /^(?:https?:)?\/\//i.test(decoded.trim())) add(decoded.trim());
+  return [...found];
+}
+
 function looksLikeMedia(url = '', ct = '') {
   const u = String(url || '').toLowerCase();
   const c = String(ct || '').toLowerCase();
-  if (/\.(m3u8|mp4|webm|mpd|m4s|ts)(\?|#|$)/i.test(u)) return true;
-  if (/\/hls\/|\/dash\/|manifest|playlist|master\.json/i.test(u)) return true;
-  if (c.includes('mpegurl') || c.includes('dash+xml') || c.startsWith('video/') || c.includes('vnd.apple')) return true;
+  if (/\.(m3u8|mp4|webm|mpd|m4s|ts|m4v|mov|mkv|avi|flv|ogv|ogg|aac|mp3|wav)(\?|#|$)/i.test(u)) return true;
+  if (/\/hls\/|\/dash\/|\/manifest(?:\/|\?|$)|playlist|master\.json|videoplayback|\bsegment\b|\bchunk\b/i.test(u)) return true;
+  if (c.includes('mpegurl') || c.includes('dash+xml') || c.includes('vnd.apple') || c.startsWith('video/') || c.startsWith('audio/') || c.includes('octet-stream')) return true;
   return false;
 }
 
@@ -209,6 +232,7 @@ function classifyMedia(url = '', ct = '') {
   if (u.includes('.mpd') || c.includes('dash+xml')) return 'mpd';
   if (u.includes('.webm') || c.includes('webm')) return 'webm';
   if (u.includes('.mp4') || c.includes('mp4') || c.startsWith('video/')) return 'mp4';
+  if (/\.(m4v|mov|mkv|avi|flv|ogv|ogg|aac|mp3|wav)(?:\?|#|$)/i.test(u) || c.startsWith('audio/')) return 'other';
   if (looksLikeMedia(url, ct)) return 'm3u8';
   return null;
 }
@@ -476,6 +500,7 @@ class BrowserContextPool {
       ignoreHTTPSErrors: true,
       viewport: { width: 1366, height: 768 },
       locale: 'en-US',
+      serviceWorkers: 'block',
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       extraHTTPHeaders: {
@@ -501,7 +526,7 @@ class BrowserContextPool {
     if (this.available.length) {
       const ctx = this.available.pop();
       if (proxy && ctx.proxy?.url !== proxy?.url) {
-        this.close(ctx);
+        await this.close(ctx);
         const fresh = await this.create(proxy);
         this.inUse.set(fresh, true);
         return fresh;
@@ -516,22 +541,25 @@ class BrowserContextPool {
   release(ctx) {
     if (!ctx) return;
     this.inUse.delete(ctx);
-    if (Date.now() - ctx.createdAt > 30 * 60 * 1000 || ctx.usage > 20) {
+    if (ctx.context?.__vdClosed || Date.now() - ctx.createdAt > 30 * 60 * 1000 || ctx.usage > 20) {
       this.close(ctx);
       return;
     }
     ctx.usage++;
     this.available.push(ctx);
   }
-  close(ctx) {
+  async close(ctx) {
+    if (!ctx) return;
     try {
-      ctx.page?.close?.().catch(() => {});
-      ctx.context?.close?.().catch(() => {});
+      if (ctx.context) ctx.context.__vdClosed = true;
+      await ctx.page?.close?.().catch(() => {});
     } catch (e) {}
+    try { await ctx.context?.close?.().catch(() => {}); } catch (e) {}
   }
   async closeAll() {
-    for (const c of this.available) this.close(c);
-    for (const c of this.inUse.keys()) this.close(c);
+    await Promise.all([...this.available, ...this.inUse.keys()].map((c) => this.close(c)));
+    this.available = [];
+    this.inUse.clear();
   }
 }
 
@@ -660,7 +688,7 @@ class VideoExtractor {
       [/(https?:\/\/[^"'\\s<>{}]+?\.mp4[^"'\\s<>{}]*)/gi, 'mp4'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.mpd[^"'\\s<>{}]*)/gi, 'mpd'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.webm[^"'\\s<>{}]*)/gi, 'webm'],
-      [/(https?:\/\/[^"'\\s<>{}]+?\.(vtt|srt)[^"'\\s<>{}]*)/gi, 'subtitles']
+      [/(https?:\/\/[^"'\\s<>{}]+?\.(vtt|srt|ass|ssa)[^"'\\s<>{}]*)/gi, 'subtitles']
     ];
     for (const [re, key] of rules) {
       let m;
@@ -669,6 +697,16 @@ class VideoExtractor {
         else bags[key].add(m[1]);
       }
     }
+    for (const candidate of extractUrlCandidates(html, base)) this.add(bags, candidate);
+    $('script[type="application/ld+json"], script[type="application/json"]').each((_, el) => {
+      for (const candidate of extractUrlCandidates($(el).text(), base)) this.add(bags, candidate);
+    });
+    $('video, audio').each((_, el) => {
+      const srcset = $(el).attr('srcset') || $(el).attr('data-srcset');
+      if (srcset) {
+        for (const item of srcset.split(',')) this.add(bags, resolveUrl(base, item.trim().split(/\s+/)[0]));
+      }
+    });
     const cfg =
       /"(?:file|src|source|sources|hls|dash|playlist|stream|videoUrl|mediaUrl|playbackUrl)"\s*:\s*"([^"]+)"/gi;
     let cm;
@@ -712,6 +750,7 @@ class VideoExtractor {
     };
 
     const bags = this.empty();
+    if (looksLikeMedia(pageUrl)) this.add(bags, pageUrl);
     let finished = false;
 
     const onRequest = (req) => {
@@ -724,13 +763,22 @@ class VideoExtractor {
         }
       } catch (e) {}
     };
-    const onResponse = (response) => {
+    const onResponse = async (response) => {
       try {
         const u = response.url();
         const ct = response.headers()['content-type'] || '';
         if (looksLikeMedia(u, ct) || looksLikeSubtitle(u, ct)) {
           diagnostics.mediaRequests++;
           this.add(bags, u, ct);
+          return;
+        }
+        const lowerType = String(ct).toLowerCase();
+        if (lowerType.includes('text/') || lowerType.includes('json') || lowerType.includes('octet-stream')) {
+          const path = u.toLowerCase();
+          if (/manifest|playlist|stream|media|video|source|\.json(?:\?|$)/i.test(path)) {
+            const body = await response.text().catch(() => '');
+            if (/^\s*#EXTM3U/m.test(body) || /<MPD[\s>]/i.test(body)) this.add(bags, u, ct);
+          }
         }
       } catch (e) {}
     };
@@ -743,6 +791,9 @@ class VideoExtractor {
     };
     page.on('request', onRequest);
     page.on('response', onResponse);
+    page.on('websocket', (ws) => {
+      try { this.add(bags, ws.url()); } catch (e) {}
+    });
     page.context().on('page', onContextPage);
 
     const work = async () => {
@@ -882,6 +933,13 @@ class VideoExtractor {
           child.off('response', onResponse);
           await child.close().catch(() => {});
         }
+        if (diagnostics.timedOut) {
+          try {
+            const context = page.context();
+            context.__vdClosed = true;
+            await context.close();
+          } catch (e) {}
+        }
       } catch (e) {}
     }
 
@@ -902,6 +960,7 @@ class VideoExtractor {
     for (const m of result.urls.mp4) variants.push({ url: m, quality: 'mp4', bandwidth: 0, type: 'mp4' });
     for (const m of result.urls.webm) variants.push({ url: m, quality: 'webm', bandwidth: 0, type: 'webm' });
     for (const m of result.urls.mpd) variants.push({ url: m, quality: 'dash', bandwidth: 0, type: 'dash' });
+    for (const m of result.urls.other) variants.push({ url: m, quality: 'other', bandwidth: 0, type: 'other' });
     for (const s of result.urls.subtitles) {
       subtitles.push({ url: s, language: null, label: 'subtitle', type: 'file' });
     }
