@@ -1,18 +1,8 @@
 /**
- * Vd-Pro Ultra v4.0 — Maximum legitimate extraction strength
- *
- * Power features:
- * - Pre-navigation network + response capture
- * - In-page hooks: fetch, XHR, MediaSource, HTMLMediaElement
- * - Multi-frame play + video.currentSrc / srcObject
- * - Generic player JSON / config URL mining
- * - Adaptive deep mode (longer waits, second pass)
- * - HLS master variant parse + ranking
- * - API-first name search (DDG + Wikipedia + optional TMDB)
- * - Security: JWT, job ownership, SSRF, WS auth
- *
- * Reality: DRM, interactive CAPTCHA, and private paywalled streams
- * cannot be reliably extracted. Ultra maximizes open/HTML5/HLS capture.
+ * Vd-Pro v4.1 — Stable Ultra
+ * Fixes: hard extraction timeout, jobs never hang in active, always return result
+ * Features: deep extract, HLS/MP4/DASH, multi-quality, subtitles when found,
+ *           search via DDG API + Wikipedia + TMDB + OMDb/IMDb
  */
 
 import express from 'express';
@@ -34,7 +24,6 @@ import { WebSocketServer } from 'ws';
 import * as prometheus from 'prom-client';
 import { URL as URLParser } from 'url';
 import dns from 'dns/promises';
-import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcrypt';
 import swaggerUi from 'swagger-ui-express';
 
@@ -50,7 +39,12 @@ const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://localhost:27017/vd-pro
 const PROXIES = (process.env.PROXIES || '').split(',').map((p) => p.trim()).filter(Boolean);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
-const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '120000', 10);
+const OMDB_API_KEY = process.env.OMDB_API_KEY || '';
+
+const HARD_EXTRACT_MS = parseInt(process.env.HARD_EXTRACT_MS || '75000', 10);
+const HARD_SEARCH_MS = parseInt(process.env.HARD_SEARCH_MS || '25000', 10);
+const NAV_TIMEOUT_MS = parseInt(process.env.NAV_TIMEOUT_MS || '35000', 10);
+const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
 
 if (NODE_ENV === 'production' && (!JWT_SECRET || JWT_SECRET.length < 32)) {
   console.error('FATAL: JWT_SECRET must be set and at least 32 characters in production');
@@ -70,10 +64,14 @@ const metrics = {
     name: 'extraction_duration_seconds',
     help: 'Extract',
     labelNames: ['status'],
-    buckets: [5, 10, 20, 30, 45, 60, 90, 120, 180]
+    buckets: [5, 10, 20, 30, 45, 60, 90, 120]
   }),
   sourceSuccess: new prometheus.Counter({ name: 'source_success_total', help: 'ok' }),
-  sourceFailure: new prometheus.Counter({ name: 'source_failure_total', help: 'fail', labelNames: ['reason'] }),
+  sourceFailure: new prometheus.Counter({
+    name: 'source_failure_total',
+    help: 'fail',
+    labelNames: ['reason']
+  }),
   cacheHits: new prometheus.Counter({ name: 'cache_hits_total', help: 'cache', labelNames: ['level'] })
 };
 Object.values(metrics).forEach((m) => {
@@ -82,18 +80,30 @@ Object.values(metrics).forEach((m) => {
   } catch (e) {}
 });
 
+function withTimeout(promise, ms, code = 'EXTRACTION_TIMEOUT') {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(code);
+      err.code = code;
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 let mongoClient = null;
 let db = null;
 
 async function connectDatabase() {
   try {
     mongoClient = new MongoClient(MONGODB_URL, {
-      maxPoolSize: 40,
-      minPoolSize: 5,
+      maxPoolSize: 30,
+      minPoolSize: 3,
       connectTimeoutMS: 10000,
       socketTimeoutMS: 45000,
-      retryWrites: true,
-      serverSelectionTimeoutMS: 10000
+      serverSelectionTimeoutMS: 10000,
+      retryWrites: true
     });
     await mongoClient.connect();
     db = mongoClient.db('vd-pro');
@@ -129,9 +139,18 @@ redis.on('connect', () => logger.info('✅ Redis connected'));
 
 class SSRFValidator {
   static PRIVATE = [
-    /^localhost$/i, /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[01])\./,
-    /^192\.168\./, /^169\.254\./, /^0\.0\.0\.0$/, /^::1$/,
-    /^fc00:/i, /^fd[0-9a-f]{2}:/i, /^fe80:/i, /^ff00:/i,
+    /^localhost$/i,
+    /^127\./,
+    /^10\./,
+    /^172\.(1[6-9]|2[0-9]|3[01])\./,
+    /^192\.168\./,
+    /^169\.254\./,
+    /^0\.0\.0\.0$/,
+    /^::1$/,
+    /^fc00:/i,
+    /^fd[0-9a-f]{2}:/i,
+    /^fe80:/i,
+    /^ff00:/i,
     /^100\.(6[4-9]|[7-9][0-9]|1[0-2][0-9])\./
   ];
   static isPrivate(host) {
@@ -147,10 +166,14 @@ class SSRFValidator {
       if (!['http:', 'https:'].includes(url.protocol)) return { valid: false, reason: 'Invalid protocol' };
       if (this.isPrivate(url.hostname)) return { valid: false, reason: 'Private host blocked' };
       try {
-        for (const a of await dns.resolve4(url.hostname)) if (this.isPrivate(a)) return { valid: false, reason: 'Private IPv4' };
+        for (const a of await dns.resolve4(url.hostname)) {
+          if (this.isPrivate(a)) return { valid: false, reason: 'Private IPv4' };
+        }
       } catch (e) {}
       try {
-        for (const a of await dns.resolve6(url.hostname)) if (this.isPrivate(a)) return { valid: false, reason: 'Private IPv6' };
+        for (const a of await dns.resolve6(url.hostname)) {
+          if (this.isPrivate(a)) return { valid: false, reason: 'Private IPv6' };
+        }
       } catch (e) {}
       return { valid: true };
     } catch (e) {
@@ -163,6 +186,7 @@ function resolveUrl(base, rel) {
   try {
     if (!rel) return null;
     if (/^(https?:|blob:|data:)/i.test(rel)) return rel;
+    if (rel.startsWith('//')) return `https:${rel}`;
     return new URL(rel, base).href;
   } catch (e) {
     return null;
@@ -170,17 +194,17 @@ function resolveUrl(base, rel) {
 }
 
 function looksLikeMedia(url = '', ct = '') {
-  const u = (url || '').toLowerCase();
-  const c = (ct || '').toLowerCase();
+  const u = String(url || '').toLowerCase();
+  const c = String(ct || '').toLowerCase();
   if (/\.(m3u8|mp4|webm|mpd|m4s|ts)(\?|#|$)/i.test(u)) return true;
-  if (/\/hls\/|\/dash\/|\/stream\/|manifest|playlist|master\.json|play\./i.test(u)) return true;
-  if (c.includes('mpegurl') || c.includes('dash+xml') || c.startsWith('video/') || c.includes('application/vnd.apple')) return true;
+  if (/\/hls\/|\/dash\/|manifest|playlist|master\.json/i.test(u)) return true;
+  if (c.includes('mpegurl') || c.includes('dash+xml') || c.startsWith('video/') || c.includes('vnd.apple')) return true;
   return false;
 }
 
 function classifyMedia(url = '', ct = '') {
-  const u = (url || '').toLowerCase();
-  const c = (ct || '').toLowerCase();
+  const u = String(url || '').toLowerCase();
+  const c = String(ct || '').toLowerCase();
   if (u.includes('.m3u8') || c.includes('mpegurl') || c.includes('vnd.apple')) return 'm3u8';
   if (u.includes('.mpd') || c.includes('dash+xml')) return 'mpd';
   if (u.includes('.webm') || c.includes('webm')) return 'webm';
@@ -189,30 +213,54 @@ function classifyMedia(url = '', ct = '') {
   return null;
 }
 
+function looksLikeSubtitle(url = '', ct = '') {
+  const u = String(url || '').toLowerCase();
+  const c = String(ct || '').toLowerCase();
+  if (/\.(vtt|srt|ass|ssa)(\?|#|$)/i.test(u)) return true;
+  if (c.includes('text/vtt') || c.includes('application/x-subrip')) return true;
+  if (/subtitle|captions|\.vtt|\/subs?\//i.test(u)) return true;
+  return false;
+}
+
 function rankScore(url) {
-  const u = (url || '').toLowerCase();
+  const u = String(url || '').toLowerCase();
   let s = 0;
   if (u.includes('.mp4')) s += 55;
   if (u.includes('.m3u8')) s += 45;
   if (u.includes('.mpd')) s += 40;
-  if (/1080|1920|2160|4k/.test(u)) s += 25;
+  if (/2160|4k/.test(u)) s += 30;
+  if (/1080|1920/.test(u)) s += 22;
   if (/720/.test(u)) s += 14;
   if (/480|360/.test(u)) s += 4;
-  if (/preview|trailer|thumb|poster|sample/.test(u)) s -= 20;
+  if (/preview|trailer|thumb|poster|sample/.test(u)) s -= 25;
   if (u.startsWith('blob:')) s -= 50;
   return s;
 }
 
 function pickByQuality(variants, quality = 'auto') {
   if (!variants?.length) return null;
-  if (!quality || quality === 'auto') return [...variants].sort((a, b) => rankScore(b.url) - rankScore(a.url))[0];
+  if (!quality || quality === 'auto') {
+    return [...variants].sort((a, b) => rankScore(b.url) - rankScore(a.url))[0];
+  }
   const q = String(quality).toLowerCase();
-  return variants.find((v) => (v.quality || '').toLowerCase().includes(q) || (v.url || '').toLowerCase().includes(q)) || variants[0];
+  return (
+    variants.find(
+      (v) => String(v.quality || '').toLowerCase().includes(q) || String(v.url || '').toLowerCase().includes(q)
+    ) || variants[0]
+  );
 }
 
 function titleSimilarity(a, b) {
-  const na = String(a || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-  const nb = String(b || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const na = String(a || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const nb = String(b || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!na || !nb) return 0;
   if (na === nb) return 1;
   if (na.includes(nb) || nb.includes(na)) return 0.9;
@@ -225,10 +273,11 @@ function titleSimilarity(a, b) {
 }
 
 const httpClient = axios.create({
-  timeout: 15000,
-  maxRedirects: 5,
+  timeout: 12000,
+  maxRedirects: 4,
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     Accept: 'application/json, text/html, */*'
   },
   validateStatus: (s) => s >= 200 && s < 400
@@ -236,9 +285,14 @@ const httpClient = axios.create({
 
 class HLSParser {
   static async fetchText(url) {
-    const res = await httpClient.get(url, { maxContentLength: 2_500_000, headers: { Accept: '*/*' } });
+    const res = await httpClient.get(url, {
+      maxContentLength: 2_000_000,
+      headers: { Accept: '*/*' },
+      timeout: 10000
+    });
     return String(res.data || '');
   }
+
   static parseMaster(text, baseUrl) {
     const lines = text.split(/\r?\n/);
     const variants = [];
@@ -258,100 +312,89 @@ class HLSParser {
         const h = parseInt(res[1].split('x')[1], 10);
         quality = h >= 2160 ? '2160p' : h >= 1080 ? '1080p' : h >= 720 ? '720p' : h >= 480 ? '480p' : `${h}p`;
       }
-      variants.push({ url: abs, bandwidth: bw ? parseInt(bw[1], 10) : 0, resolution: res?.[1] || null, quality: quality || 'unknown' });
+      variants.push({
+        url: abs,
+        bandwidth: bw ? parseInt(bw[1], 10) : 0,
+        resolution: res?.[1] || null,
+        quality: quality || 'unknown',
+        type: 'hls'
+      });
     }
     return variants;
   }
+
+  static parseSubtitles(text, baseUrl) {
+    const subs = [];
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line.startsWith('#EXT-X-MEDIA:') || !/TYPE=SUBTITLES/i.test(line)) continue;
+      const name = /NAME="([^"]+)"/i.exec(line)?.[1];
+      const lang = /LANGUAGE="([^"]+)"/i.exec(line)?.[1];
+      const uri = /URI="([^"]+)"/i.exec(line)?.[1];
+      if (!uri) continue;
+      const abs = resolveUrl(baseUrl, uri);
+      if (abs) subs.push({ url: abs, language: lang || null, label: name || lang || 'subtitle', type: 'hls' });
+    }
+    return subs;
+  }
+
   static async enrich(m3u8Url) {
     try {
       const text = await this.fetchText(m3u8Url);
-      if (!text.includes('#EXTM3U')) return { variants: [] };
-      if (text.includes('#EXT-X-STREAM-INF')) return { variants: this.parseMaster(text, m3u8Url) };
-      return { variants: [{ url: m3u8Url, quality: 'media', bandwidth: 0 }] };
+      if (!text.includes('#EXTM3U')) return { variants: [], subtitles: [] };
+      const subtitles = this.parseSubtitles(text, m3u8Url);
+      if (text.includes('#EXT-X-STREAM-INF')) {
+        return { variants: this.parseMaster(text, m3u8Url), subtitles };
+      }
+      return { variants: [{ url: m3u8Url, quality: 'media', bandwidth: 0, type: 'hls' }], subtitles };
     } catch (e) {
-      return { variants: [] };
+      return { variants: [], subtitles: [] };
     }
   }
 }
 
-/** Injected before any page JS — captures media URLs from the page itself */
 const PAGE_HOOK_SCRIPT = `
 (function(){
   if (window.__vdProHooks) return;
   window.__vdProHooks = true;
-  window.__vdCaptured = window.__vdCaptured || [];
+  window.__vdCaptured = [];
   function push(u, why){
     try {
       if (!u || typeof u !== 'string') return;
-      if (u.indexOf('http') !== 0 && u.indexOf('blob:') !== 0 && u.indexOf('//') !== 0) return;
+      if (u.indexOf('http') !== 0 && u.indexOf('//') !== 0 && u.indexOf('blob:') !== 0) return;
       if (u.indexOf('//') === 0) u = location.protocol + u;
       window.__vdCaptured.push({ url: u, why: why || 'hook', t: Date.now() });
     } catch(e){}
   }
   try {
-    const ofetch = window.fetch;
+    var ofetch = window.fetch;
     window.fetch = function(){
       try {
-        const a = arguments[0];
-        const u = typeof a === 'string' ? a : (a && a.url);
+        var a = arguments[0];
+        var u = typeof a === 'string' ? a : (a && a.url);
         if (u) push(String(u), 'fetch');
       } catch(e){}
       return ofetch.apply(this, arguments);
     };
   } catch(e){}
   try {
-    const xo = XMLHttpRequest.prototype.open;
+    var xo = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(method, url){
       try { if (url) push(String(url), 'xhr'); } catch(e){}
       return xo.apply(this, arguments);
     };
-  } catch(e){}
-  try {
-    const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-    if (desc && desc.set) {
-      Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-        set: function(v){ push(String(v), 'media.src'); return desc.set.call(this, v); },
-        get: function(){ return desc.get.call(this); },
-        configurable: true
-      });
-    }
-  } catch(e){}
-  try {
-    const os = HTMLMediaElement.prototype.setAttribute;
-    HTMLMediaElement.prototype.setAttribute = function(n, v){
-      if (String(n).toLowerCase() === 'src') push(String(v), 'media.attr');
-      return os.apply(this, arguments);
-    };
-  } catch(e){}
-  try {
-    if (window.MediaSource) {
-      const add = MediaSource.prototype.addSourceBuffer;
-      MediaSource.prototype.addSourceBuffer = function(mime){
-        try { push(String(mime), 'mse.mime'); } catch(e){}
-        return add.apply(this, arguments);
-      };
-    }
   } catch(e){}
 })();
 `;
 
 class StealthGenerator {
   static script() {
-    return `
-(function(){
-  Object.defineProperty(navigator,'webdriver',{get:()=>false});
-  try{delete navigator.__proto__.webdriver}catch(e){}
-  Object.defineProperty(navigator,'languages',{get:()=>['en-US','en','ar']});
-  window.chrome = window.chrome || { runtime: {}, app: {} };
-  const gp = WebGLRenderingContext.prototype.getParameter;
-  WebGLRenderingContext.prototype.getParameter = function(p){
-    if (p === 37445) return 'Google Inc. (NVIDIA)';
-    if (p === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11)';
-    return gp.call(this, p);
-  };
-  Object.defineProperty(navigator,'hardwareConcurrency',{get:()=>8});
-  Object.defineProperty(navigator,'deviceMemory',{get:()=>8});
-  Object.defineProperty(navigator,'vendor',{get:()=>'Google Inc.'});
+    return `(function(){
+Object.defineProperty(navigator,'webdriver',{get:function(){return false}});
+try{delete navigator.__proto__.webdriver}catch(e){}
+Object.defineProperty(navigator,'languages',{get:function(){return ['en-US','en','ar']}});
+window.chrome=window.chrome||{runtime:{},app:{}};
 })();`;
   }
 }
@@ -415,14 +458,14 @@ class SessionManager {
   async save(userId, cookies) {
     if (!userId) return;
     try {
-      await redis.setex(`session:${userId}`, 604800, JSON.stringify({ cookies, updatedAt: new Date() }));
+      await redis.setex(`session:${userId}`, 604800, JSON.stringify({ cookies }));
     } catch (e) {}
   }
 }
 const sessionManager = new SessionManager();
 
 class BrowserContextPool {
-  constructor(browser, size = 3) {
+  constructor(browser, size = 2) {
     this.browser = browser;
     this.size = size;
     this.available = [];
@@ -431,15 +474,12 @@ class BrowserContextPool {
   async create(proxy = null) {
     const opts = {
       ignoreHTTPSErrors: true,
-      viewport: { width: 1920, height: 1080 },
+      viewport: { width: 1366, height: 768 },
       locale: 'en-US',
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       extraHTTPHeaders: {
-        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
-        'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"'
+        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8'
       }
     };
     if (proxy?.url) opts.proxy = { server: proxy.url };
@@ -447,6 +487,11 @@ class BrowserContextPool {
     const page = await context.newPage();
     await page.addInitScript(StealthGenerator.script());
     await page.addInitScript(PAGE_HOOK_SCRIPT);
+    await page.route('**/*', (route) => {
+      const t = route.request().resourceType();
+      if (t === 'image' || t === 'font') return route.abort().catch(() => {});
+      return route.continue().catch(() => {});
+    });
     return { context, page, createdAt: Date.now(), usage: 0, proxy, pool: this };
   }
   async init() {
@@ -455,7 +500,7 @@ class BrowserContextPool {
   async get(proxy = null) {
     if (this.available.length) {
       const ctx = this.available.pop();
-      if (proxy && ctx.proxy?.url !== proxy.url) {
+      if (proxy && ctx.proxy?.url !== proxy?.url) {
         this.close(ctx);
         const fresh = await this.create(proxy);
         this.inUse.set(fresh, true);
@@ -471,7 +516,7 @@ class BrowserContextPool {
   release(ctx) {
     if (!ctx) return;
     this.inUse.delete(ctx);
-    if (Date.now() - ctx.createdAt > 40 * 60 * 1000 || ctx.usage > 25) {
+    if (Date.now() - ctx.createdAt > 30 * 60 * 1000 || ctx.usage > 20) {
       this.close(ctx);
       return;
     }
@@ -506,13 +551,13 @@ class BrowserPool {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-gpu',
-          '--window-size=1920,1080',
-          '--autoplay-policy=no-user-gesture-required'
+          '--autoplay-policy=no-user-gesture-required',
+          '--window-size=1366,768'
         ],
-        timeout: 30000
+        timeout: 25000
       });
       this.browsers.push(browser);
-      const pool = new BrowserContextPool(browser, 3);
+      const pool = new BrowserContextPool(browser, 2);
       await pool.init();
       this.pools.push(pool);
     }
@@ -532,54 +577,55 @@ class BrowserPool {
 }
 let browserPool = null;
 
-async function tryClickPlayEverywhere(page) {
+async function tryClickPlay(page) {
   const selectors = [
     'button[aria-label*="Play" i]',
-    'button[title*="Play" i]',
     '.vjs-big-play-button',
-    '.ytp-large-play-button',
     '.plyr__control--overlaid',
     '.jw-icon-display',
-    '.fp-play',
     'button.play',
-    '.play-button',
-    '[data-testid*="play" i]',
     'video'
   ];
   let clicked = false;
-  for (const frame of page.frames()) {
+  for (const frame of page.frames().slice(0, 8)) {
     for (const sel of selectors) {
       try {
         const el = await frame.$(sel);
         if (!el) continue;
-        await el.click({ timeout: 1200 }).catch(() => {});
+        await el.click({ timeout: 800 }).catch(() => {});
         clicked = true;
-        await page.waitForTimeout(400);
       } catch (e) {}
     }
   }
   return clicked;
 }
 
-/**
- * Ultra extractor — maximum capture surface
- */
-class UltraExtractor {
+class VideoExtractor {
   constructor() {
-    this.name = 'vd-pro-ultra';
+    this.name = 'vd-pro';
   }
 
   empty() {
-    return { m3u8: new Set(), mp4: new Set(), webm: new Set(), mpd: new Set(), other: new Set() };
+    return {
+      m3u8: new Set(),
+      mp4: new Set(),
+      webm: new Set(),
+      mpd: new Set(),
+      other: new Set(),
+      subtitles: new Set()
+    };
   }
 
   add(bags, url, ct = '') {
     if (!url || typeof url !== 'string') return;
     if (url.startsWith('blob:')) return;
-    const abs = url;
-    const k = classifyMedia(abs, ct);
-    if (k) bags[k].add(abs);
-    else if (looksLikeMedia(abs, ct)) bags.other.add(abs);
+    if (looksLikeSubtitle(url, ct)) {
+      bags.subtitles.add(url);
+      return;
+    }
+    const k = classifyMedia(url, ct);
+    if (k) bags[k].add(url);
+    else if (looksLikeMedia(url, ct)) bags.other.add(url);
   }
 
   toObj(bags, base) {
@@ -590,33 +636,41 @@ class UltraExtractor {
       mp4: abs(bags.mp4),
       webm: abs(bags.webm),
       mpd: abs(bags.mpd),
-      other: abs(bags.other)
+      other: abs(bags.other),
+      subtitles: abs(bags.subtitles)
     };
   }
 
   mineHtml(html, bags, base) {
-    const $ = cheerio.load(html);
-    $('video, source, [data-src], [data-video], [data-url], [data-stream], [data-file], [data-hls], [data-mp4]').each(
+    const $ = cheerio.load(html || '');
+    $('video, source, track, [data-src], [data-video], [data-url], [data-stream], [data-file], [data-hls]').each(
       (_, el) => {
-        for (const a of ['src', 'data-src', 'data-video', 'data-url', 'data-stream', 'data-file', 'data-hls', 'data-mp4']) {
+        for (const a of ['src', 'data-src', 'data-video', 'data-url', 'data-stream', 'data-file', 'data-hls']) {
           const v = $(el).attr(a);
           if (v) this.add(bags, resolveUrl(base, v) || v);
         }
+        if ($(el).is('track')) {
+          const v = $(el).attr('src');
+          if (v) bags.subtitles.add(resolveUrl(base, v) || v);
+        }
       }
     );
-    // generic quoted media urls
     const rules = [
       [/(https?:\/\/[^"'\\s<>{}]+?\.m3u8[^"'\\s<>{}]*)/gi, 'm3u8'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.mp4[^"'\\s<>{}]*)/gi, 'mp4'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.mpd[^"'\\s<>{}]*)/gi, 'mpd'],
-      [/(https?:\/\/[^"'\\s<>{}]+?\.webm[^"'\\s<>{}]*)/gi, 'webm']
+      [/(https?:\/\/[^"'\\s<>{}]+?\.webm[^"'\\s<>{}]*)/gi, 'webm'],
+      [/(https?:\/\/[^"'\\s<>{}]+?\.(vtt|srt)[^"'\\s<>{}]*)/gi, 'subtitles']
     ];
     for (const [re, key] of rules) {
       let m;
-      while ((m = re.exec(html)) !== null) bags[key].add(m[1]);
+      while ((m = re.exec(html)) !== null) {
+        if (key === 'subtitles') bags.subtitles.add(m[1]);
+        else bags[key].add(m[1]);
+      }
     }
-    // player config-ish keys
-    const cfg = /"(?:file|src|source|sources|hls|dash|playlist|stream|videoUrl|mediaUrl|playbackUrl)"\s*:\s*"([^"]+)"/gi;
+    const cfg =
+      /"(?:file|src|source|sources|hls|dash|playlist|stream|videoUrl|mediaUrl|playbackUrl)"\s*:\s*"([^"]+)"/gi;
     let cm;
     while ((cm = cfg.exec(html)) !== null) {
       const u = cm[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
@@ -633,10 +687,9 @@ class UltraExtractor {
       requestsObserved: 0,
       mediaRequests: 0,
       playClicked: false,
-      hookCaptures: 0,
       strategies: [],
       captchaSuspected: false,
-      passes: 1
+      timedOut: false
     };
 
     const result = {
@@ -644,6 +697,8 @@ class UltraExtractor {
       primaryUrl: null,
       urls: { m3u8: [], mp4: [], webm: [], mpd: [], other: [] },
       variants: [],
+      subtitles: [],
+      qualities: [],
       duration: 0,
       strategy: null,
       quality,
@@ -652,27 +707,28 @@ class UltraExtractor {
       errorCode: null,
       diagnostics,
       source: this.name,
-      pageTitle: null
+      pageTitle: null,
+      completedCleanly: false
     };
 
     const bags = this.empty();
+    let finished = false;
 
     const onRequest = (req) => {
       try {
         diagnostics.requestsObserved++;
         const u = req.url();
-        if (looksLikeMedia(u)) {
+        if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
           diagnostics.mediaRequests++;
           this.add(bags, u);
         }
       } catch (e) {}
     };
-
-    const onResponse = async (response) => {
+    const onResponse = (response) => {
       try {
         const u = response.url();
         const ct = response.headers()['content-type'] || '';
-        if (looksLikeMedia(u, ct)) {
+        if (looksLikeMedia(u, ct) || looksLikeSubtitle(u, ct)) {
           diagnostics.mediaRequests++;
           this.add(bags, u, ct);
         }
@@ -682,7 +738,7 @@ class UltraExtractor {
     page.on('request', onRequest);
     page.on('response', onResponse);
 
-    try {
+    const work = async () => {
       const cookies = await sessionManager.load(userId);
       if (cookies?.length) {
         try {
@@ -690,43 +746,35 @@ class UltraExtractor {
         } catch (e) {}
       }
 
-      // Ensure hooks exist on this page instance
       try {
-        await page.addInitScript(PAGE_HOOK_SCRIPT);
-      } catch (e) {}
-
-      try {
-        await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 55000 });
+        await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
       } catch (e) {
         diagnostics.navWarning = e.message;
       }
 
       try {
         result.pageTitle = await page.title();
-        const bodyText = await page.evaluate(() => (document.body?.innerText || '').slice(0, 2000));
-        if (/captcha|cloudflare|verify you are human|attention required/i.test(bodyText + (result.pageTitle || ''))) {
+        const snippet = await page.evaluate(() => (document.body && document.body.innerText ? document.body.innerText.slice(0, 1500) : ''));
+        if (/captcha|cloudflare|verify you are human|attention required/i.test(String(result.pageTitle) + ' ' + snippet)) {
           diagnostics.captchaSuspected = true;
         }
       } catch (e) {}
 
-      // human-ish
       try {
-        await page.waitForTimeout(500 + Math.random() * 700);
-        await page.evaluate(() => window.scrollBy(0, 350));
+        await page.waitForTimeout(400);
+        await page.evaluate(() => window.scrollBy(0, 280));
       } catch (e) {}
 
-      diagnostics.playClicked = await tryClickPlayEverywhere(page);
-      await page.waitForTimeout(deep ? 6000 : 3500);
+      diagnostics.playClicked = await tryClickPlay(page);
+      await page.waitForTimeout(deep ? 4500 : 2500);
       diagnostics.strategies.push('network');
 
-      // DOM + scripts main frame
       try {
         const html = await page.content();
         this.mineHtml(html, bags, pageUrl);
-        diagnostics.strategies.push('dom+script');
+        diagnostics.strategies.push('dom');
       } catch (e) {}
 
-      // video element state
       try {
         const mediaUrls = await page.evaluate(() => {
           const out = [];
@@ -737,21 +785,20 @@ class UltraExtractor {
               if (s.src) out.push(s.src);
             });
           });
-          if (window.__vdCaptured) {
-            window.__vdCaptured.forEach((x) => out.push(x.url));
-          }
+          document.querySelectorAll('track').forEach((t) => {
+            if (t.src) out.push(t.src);
+          });
+          (window.__vdCaptured || []).forEach((x) => out.push(x.url));
           return out;
         });
-        diagnostics.hookCaptures = mediaUrls.length;
         mediaUrls.forEach((u) => this.add(bags, u));
-        diagnostics.strategies.push('media-element+hooks');
+        diagnostics.strategies.push('hooks');
       } catch (e) {}
 
-      // frames
       try {
-        const frames = page.frames();
-        diagnostics.framesVisited = frames.length;
-        for (const frame of frames.slice(0, deep ? 16 : 10)) {
+        const frames = page.frames().slice(0, deep ? 10 : 6);
+        diagnostics.framesVisited = page.frames().length;
+        for (const frame of frames) {
           try {
             const html = await frame.content();
             this.mineHtml(html, bags, pageUrl);
@@ -761,7 +808,7 @@ class UltraExtractor {
                 if (v.currentSrc) out.push(v.currentSrc);
                 if (v.src) out.push(v.src);
               });
-              if (window.__vdCaptured) window.__vdCaptured.forEach((x) => out.push(x.url));
+              (window.__vdCaptured || []).forEach((x) => out.push(x.url));
               return out;
             });
             fu.forEach((u) => this.add(bags, u));
@@ -770,74 +817,93 @@ class UltraExtractor {
         diagnostics.strategies.push('frames');
       } catch (e) {}
 
-      // Second pass if deep and still empty
-      const provisional = this.toObj(bags, pageUrl);
-      const hasAny =
-        provisional.m3u8.length + provisional.mp4.length + provisional.webm.length + provisional.mpd.length > 0;
-      if (deep && !hasAny) {
-        diagnostics.passes = 2;
-        diagnostics.playClicked = (await tryClickPlayEverywhere(page)) || diagnostics.playClicked;
-        await page.waitForTimeout(5000);
+      const mid = this.toObj(bags, pageUrl);
+      if (deep && !(mid.m3u8.length || mid.mp4.length || mid.mpd.length)) {
+        diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
+        await page.waitForTimeout(3500);
         try {
           const html2 = await page.content();
           this.mineHtml(html2, bags, pageUrl);
-          const more = await page.evaluate(() => (window.__vdCaptured || []).map((x) => x.url));
-          more.forEach((u) => this.add(bags, u));
         } catch (e) {}
-        diagnostics.strategies.push('deep-second-pass');
+        diagnostics.strategies.push('deep-pass');
       }
+    };
 
-      page.off('request', onRequest);
-      page.off('response', onResponse);
-
-      result.urls = this.toObj(bags, pageUrl);
-
-      const variants = [];
-      for (const m of result.urls.m3u8.slice(0, 6)) {
-        const en = await HLSParser.enrich(m);
-        if (en.variants?.length) variants.push(...en.variants);
-        else variants.push({ url: m, quality: 'unknown', bandwidth: 0 });
-      }
-      for (const m of result.urls.mp4) variants.push({ url: m, quality: 'mp4', bandwidth: 0 });
-      for (const m of result.urls.webm) variants.push({ url: m, quality: 'webm', bandwidth: 0 });
-      for (const m of result.urls.mpd) variants.push({ url: m, quality: 'dash', bandwidth: 0 });
-      variants.sort((a, b) => rankScore(b.url) - rankScore(a.url));
-      result.variants = variants.slice(0, 25);
-
-      const picked = pickByQuality(result.variants, quality);
-      if (picked?.url) {
-        result.primaryUrl = picked.url;
-        result.success = true;
-        result.strategy = diagnostics.strategies.join('+');
-        const v = await ResultValidator.validate(result.primaryUrl);
-        result.validated = v.valid;
-        if (!v.valid) result.validationReason = v.reason;
-      } else {
-        result.error = diagnostics.captchaSuspected
-          ? 'Possible bot protection page; no media streams observed'
-          : 'No video streams found';
-        result.errorCode = diagnostics.captchaSuspected ? 'BOT_PROTECTION_SUSPECTED' : 'NO_STREAM_FOUND';
-      }
-
-      try {
-        const c = await page.context().cookies();
-        if (c.length) await sessionManager.save(userId, c);
-      } catch (e) {}
-
-      result.duration = (Date.now() - started) / 1000;
-      result.diagnostics = diagnostics;
-      return result;
+    try {
+      await withTimeout(work(), HARD_EXTRACT_MS, 'EXTRACTION_TIMEOUT');
+      finished = true;
     } catch (error) {
+      if (error.code === 'EXTRACTION_TIMEOUT' || error.message === 'EXTRACTION_TIMEOUT') {
+        diagnostics.timedOut = true;
+        result.errorCode = 'EXTRACTION_TIMEOUT';
+        result.error = 'Extraction exceeded time limit';
+      } else {
+        result.errorCode = 'EXTRACTION_ERROR';
+        result.error = error.message;
+      }
+    } finally {
       try {
         page.off('request', onRequest);
         page.off('response', onResponse);
       } catch (e) {}
-      result.error = error.message;
-      result.errorCode = 'EXTRACTION_ERROR';
-      result.duration = (Date.now() - started) / 1000;
-      result.diagnostics = diagnostics;
-      return result;
     }
+
+    result.urls = this.toObj(bags, pageUrl);
+
+    const variants = [];
+    const subtitles = [];
+    for (const m of result.urls.m3u8.slice(0, 4)) {
+      try {
+        const en = await withTimeout(HLSParser.enrich(m), 8000, 'HLS_TIMEOUT');
+        if (en.variants && en.variants.length) variants.push(...en.variants);
+        else variants.push({ url: m, quality: 'unknown', bandwidth: 0, type: 'hls' });
+        if (en.subtitles && en.subtitles.length) subtitles.push(...en.subtitles);
+      } catch (e) {
+        variants.push({ url: m, quality: 'unknown', bandwidth: 0, type: 'hls' });
+      }
+    }
+    for (const m of result.urls.mp4) variants.push({ url: m, quality: 'mp4', bandwidth: 0, type: 'mp4' });
+    for (const m of result.urls.webm) variants.push({ url: m, quality: 'webm', bandwidth: 0, type: 'webm' });
+    for (const m of result.urls.mpd) variants.push({ url: m, quality: 'dash', bandwidth: 0, type: 'dash' });
+    for (const s of result.urls.subtitles) {
+      subtitles.push({ url: s, language: null, label: 'subtitle', type: 'file' });
+    }
+
+    variants.sort((a, b) => rankScore(b.url) - rankScore(a.url));
+    result.variants = variants.slice(0, 20);
+    result.subtitles = subtitles.slice(0, 15);
+    result.qualities = [...new Set(result.variants.map((v) => v.quality).filter(Boolean))];
+
+    const picked = pickByQuality(result.variants, quality);
+    if (picked && picked.url) {
+      result.primaryUrl = picked.url;
+      result.success = true;
+      result.strategy = diagnostics.strategies.join('+') || 'partial';
+      result.error = null;
+      result.errorCode = null;
+      try {
+        const v = await ResultValidator.validate(result.primaryUrl);
+        result.validated = v.valid;
+        if (!v.valid) result.validationReason = v.reason;
+      } catch (e) {
+        result.validated = false;
+      }
+    } else if (!result.errorCode) {
+      result.error = diagnostics.captchaSuspected
+        ? 'Possible bot protection; no media streams observed'
+        : 'No video streams found';
+      result.errorCode = diagnostics.captchaSuspected ? 'BOT_PROTECTION_SUSPECTED' : 'NO_STREAM_FOUND';
+    }
+
+    try {
+      const c = await page.context().cookies();
+      if (c.length) await sessionManager.save(userId, c);
+    } catch (e) {}
+
+    result.duration = (Date.now() - started) / 1000;
+    result.diagnostics = diagnostics;
+    result.completedCleanly = finished;
+    return result;
   }
 }
 
@@ -851,13 +917,13 @@ class ResultValidator {
     }
     try {
       const res = await axios.get(url, {
-        timeout: 12000,
-        maxRedirects: 4,
-        maxContentLength: 400000,
+        timeout: 10000,
+        maxRedirects: 3,
+        maxContentLength: 250000,
         validateStatus: () => true,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Range: 'bytes=0-16384'
+          Range: 'bytes=0-8192'
         }
       });
       if (res.status < 200 || res.status >= 400) return { valid: false, reason: 'INVALID_STATUS' };
@@ -877,7 +943,8 @@ class SearchProvider {
     if (!url || !/^https?:\/\//i.test(url)) return;
     if (/duckduckgo\.com|google\.[a-z.]+\/search|bing\.com\/search|wikipedia\.org\/w\/api/i.test(url)) return;
     const score =
-      (item.score ?? titleSimilarity(item.query || '', item.title || item.name || '')) + (item.boost || 0);
+      (item.score != null ? item.score : titleSimilarity(item.query || '', item.title || item.name || '')) +
+      (item.boost || 0);
     const prev = map.get(url);
     if (!prev || score > prev.score) {
       map.set(url, {
@@ -888,7 +955,11 @@ class SearchProvider {
         source: item.source || 'unknown',
         type: item.type || 'link',
         year: item.year || null,
-        overview: item.overview || null
+        overview: item.overview || null,
+        imdbId: item.imdbId || null,
+        tmdbId: item.tmdbId || null,
+        poster: item.poster || null,
+        pageUrl: url
       });
     }
   }
@@ -896,9 +967,10 @@ class SearchProvider {
   async searchDuckDuckGoAPI(query, map) {
     try {
       const { data } = await httpClient.get('https://api.duckduckgo.com/', {
-        params: { q: query, format: 'json', no_redirect: 1, no_html: 1, skip_disambig: 1 }
+        params: { q: query, format: 'json', no_redirect: 1, no_html: 1, skip_disambig: 1 },
+        timeout: 10000
       });
-      if (data?.Heading && data?.AbstractURL) {
+      if (data && data.Heading && data.AbstractURL) {
         this.add(map, {
           name: data.Heading,
           title: data.Heading,
@@ -909,7 +981,7 @@ class SearchProvider {
           overview: data.Abstract || null
         });
       }
-      for (const t of data?.RelatedTopics || []) {
+      for (const t of data && data.RelatedTopics ? data.RelatedTopics : []) {
         const items = t.Topics || [t];
         for (const sub of items) {
           if (sub.FirstURL && sub.Text) {
@@ -932,15 +1004,16 @@ class SearchProvider {
   async searchWikipedia(query, map) {
     try {
       const { data } = await httpClient.get('https://en.wikipedia.org/w/api.php', {
-        params: { action: 'opensearch', search: query, limit: 10, namespace: 0, format: 'json' }
+        params: { action: 'opensearch', search: query, limit: 8, namespace: 0, format: 'json' },
+        timeout: 10000
       });
-      const titles = data?.[1] || [];
-      const descs = data?.[2] || [];
-      const urls = data?.[3] || [];
+      const titles = (data && data[1]) || [];
+      const descs = (data && data[2]) || [];
+      const urls = (data && data[3]) || [];
       for (let i = 0; i < titles.length; i++) {
         this.add(map, {
           name: titles[i],
-          title: descs[i] ? `${titles[i]} — ${descs[i]}` : titles[i],
+          title: descs[i] ? titles[i] + ' — ' + descs[i] : titles[i],
           url: urls[i],
           source: 'wikipedia',
           query,
@@ -954,29 +1027,64 @@ class SearchProvider {
     if (!TMDB_API_KEY) return;
     try {
       const { data } = await httpClient.get('https://api.themoviedb.org/3/search/multi', {
-        params: { api_key: TMDB_API_KEY, query, include_adult: false, language: 'en-US', page: 1 }
+        params: { api_key: TMDB_API_KEY, query, include_adult: false, language: 'en-US', page: 1 },
+        timeout: 10000
       });
-      for (const item of data?.results || []) {
+      for (const item of (data && data.results) || []) {
         if (item.media_type !== 'movie' && item.media_type !== 'tv') continue;
         const name = item.title || item.name;
-        const year = (item.release_date || item.first_air_date || '').slice(0, 4) || null;
+        const year = String(item.release_date || item.first_air_date || '').slice(0, 4) || null;
         const tmdbUrl =
           item.media_type === 'movie'
-            ? `https://www.themoviedb.org/movie/${item.id}`
-            : `https://www.themoviedb.org/tv/${item.id}`;
+            ? 'https://www.themoviedb.org/movie/' + item.id
+            : 'https://www.themoviedb.org/tv/' + item.id;
+        const poster = item.poster_path ? 'https://image.tmdb.org/t/p/w342' + item.poster_path : null;
         this.add(map, {
-          name: year ? `${name} (${year})` : name,
+          name: year ? name + ' (' + year + ')' : name,
           title: name,
           url: tmdbUrl,
           source: 'tmdb',
           type: item.media_type,
           year,
           overview: item.overview || null,
+          tmdbId: item.id,
+          poster,
+          query,
+          boost: 0.22
+        });
+      }
+    } catch (e) {
+      logger.warn({ error: e.message }, 'TMDB failed');
+    }
+  }
+
+  async searchOMDb(query, map) {
+    if (!OMDB_API_KEY) return;
+    try {
+      const { data } = await httpClient.get('https://www.omdbapi.com/', {
+        params: { apikey: OMDB_API_KEY, s: query },
+        timeout: 10000
+      });
+      if (data && data.Response === 'False') return;
+      for (const item of (data && data.Search) || []) {
+        if (!item.imdbID) continue;
+        const imdbUrl = 'https://www.imdb.com/title/' + item.imdbID + '/';
+        this.add(map, {
+          name: item.Year ? item.Title + ' (' + item.Year + ')' : item.Title,
+          title: item.Title,
+          url: imdbUrl,
+          source: 'imdb-omdb',
+          type: String(item.Type || 'movie').toLowerCase(),
+          year: item.Year || null,
+          imdbId: item.imdbID,
+          poster: item.Poster && item.Poster !== 'N/A' ? item.Poster : null,
           query,
           boost: 0.2
         });
       }
-    } catch (e) {}
+    } catch (e) {
+      logger.warn({ error: e.message }, 'OMDb failed');
+    }
   }
 
   async searchByName(query) {
@@ -985,23 +1093,28 @@ class SearchProvider {
     const map = new Map();
     await Promise.all([
       this.searchDuckDuckGoAPI(q, map),
-      this.searchDuckDuckGoAPI(`${q} TV series`, map),
+      this.searchDuckDuckGoAPI(q + ' series', map),
       this.searchWikipedia(q, map),
-      this.searchTMDB(q, map)
+      this.searchTMDB(q, map),
+      this.searchOMDb(q, map)
     ]);
     let results = [...map.values()].sort((a, b) => b.score - a.score);
-    const strong = results.filter((r) => r.score >= 0.15);
+    const strong = results.filter((r) => r.score >= 0.12);
     if (strong.length >= 2) results = strong;
     return results.slice(0, 15).map((r, i) => ({
       rank: i + 1,
       name: r.name,
       title: r.title,
       url: r.url,
+      pageUrl: r.pageUrl || r.url,
       matchScore: Math.round(r.score * 1000) / 1000,
       source: r.source,
       type: r.type,
       year: r.year,
-      overview: r.overview
+      overview: r.overview,
+      imdbId: r.imdbId,
+      tmdbId: r.tmdbId,
+      poster: r.poster
     }));
   }
 }
@@ -1009,10 +1122,10 @@ class SearchProvider {
 class CacheManager {
   constructor() {
     this.l1 = new Map();
-    this.max = 100;
+    this.max = 80;
   }
   key(url, quality, deep) {
-    return crypto.createHash('sha256').update(`${url}::${quality}::${deep ? 1 : 0}`).digest('hex');
+    return crypto.createHash('sha256').update(url + '::' + quality + '::' + (deep ? 1 : 0)).digest('hex');
   }
   async get(url, quality = 'auto', deep = false) {
     const k = this.key(url, quality, deep);
@@ -1021,7 +1134,7 @@ class CacheManager {
       return this.l1.get(k);
     }
     try {
-      const raw = await redis.get(`cache:${k}`);
+      const raw = await redis.get('cache:' + k);
       if (raw) {
         metrics.cacheHits.labels('l2').inc();
         return JSON.parse(raw);
@@ -1034,7 +1147,7 @@ class CacheManager {
     if (this.l1.size >= this.max) this.l1.delete(this.l1.keys().next().value);
     this.l1.set(k, data);
     try {
-      await redis.setex(`cache:${k}`, 86400, JSON.stringify(data));
+      await redis.setex('cache:' + k, 86400, JSON.stringify(data));
     } catch (e) {}
   }
 }
@@ -1053,7 +1166,7 @@ class SingleFlight {
   set(k, p) {
     const id = this.h(k);
     this.map.set(id, p);
-    setTimeout(() => this.map.delete(id), 300000);
+    setTimeout(() => this.map.delete(id), 180000);
   }
   del(k) {
     if (k) this.map.delete(this.h(k));
@@ -1061,44 +1174,19 @@ class SingleFlight {
 }
 const singleFlight = new SingleFlight();
 
-class CircuitBreaker {
-  constructor() {
-    this.state = 'CLOSED';
-    this.fails = 0;
-    this.ok = 0;
-    this.next = 0;
+const extractionQueue = new Queue('vd-pro-v41', REDIS_URL, {
+  settings: {
+    stalledInterval: 20000,
+    maxStalledCount: 1,
+    lockDuration: JOB_LOCK_MS,
+    lockRenewTime: Math.floor(JOB_LOCK_MS / 3)
+  },
+  defaultJobOptions: {
+    removeOnComplete: 80,
+    removeOnFail: 40,
+    attempts: 2,
+    backoff: { type: 'fixed', delay: 2000 }
   }
-  async run(fn) {
-    if (this.state === 'OPEN') {
-      if (Date.now() < this.next) throw new Error('Circuit breaker OPEN');
-      this.state = 'HALF_OPEN';
-    }
-    try {
-      const r = await fn();
-      this.fails = 0;
-      if (this.state === 'HALF_OPEN') {
-        this.ok++;
-        if (this.ok >= 2) {
-          this.state = 'CLOSED';
-          this.ok = 0;
-        }
-      }
-      return r;
-    } catch (e) {
-      this.fails++;
-      this.ok = 0;
-      if (this.fails >= 5) {
-        this.state = 'OPEN';
-        this.next = Date.now() + 60000;
-      }
-      throw e;
-    }
-  }
-}
-const circuitBreaker = new CircuitBreaker();
-
-const extractionQueue = new Queue('vd-pro-ultra', REDIS_URL, {
-  settings: { stalledInterval: 15000, maxStalledCount: 2, lockDuration: 180000, lockRenewTime: 80000 }
 });
 
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
@@ -1127,7 +1215,9 @@ const verifyToken = async (req, res, next) => {
       const user = await db.collection('users').findOne({ apiKey: decoded.apiKey });
       if (!user) return res.status(403).json({ success: false, error: 'User not found', code: 'USER_NOT_FOUND' });
       req.user = user;
-    } else req.user = { _id: decoded.apiKey, plan: 'free', apiKey: decoded.apiKey };
+    } else {
+      req.user = { _id: decoded.apiKey, plan: 'free', apiKey: decoded.apiKey };
+    }
     next();
   } catch (e) {
     return res.status(403).json({ success: false, error: 'Invalid token', code: 'INVALID_TOKEN' });
@@ -1141,7 +1231,7 @@ app.use(
     max: 100,
     keyGenerator: (req) => {
       const id = req.user?._id?.toString?.() || req.user?._id;
-      return id ? `u:${id}` : `ip:${req.ip}`;
+      return id ? 'u:' + id : 'ip:' + req.ip;
     }
   })
 );
@@ -1150,17 +1240,16 @@ app.get('/api/v1/health', (req, res) => {
   res.json({
     status: 'healthy',
     name: 'Vd-Pro',
-    version: '4.0.0-ultra',
+    version: '4.1.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
-    features: [
-      'pre-nav-network-capture',
-      'page-hooks-fetch-xhr-media',
-      'multi-frame-play',
-      'hls-variants',
-      'deep-second-pass',
-      'api-search'
-    ],
+    limits: { hardExtractMs: HARD_EXTRACT_MS, navTimeoutMs: NAV_TIMEOUT_MS },
+    searchProviders: {
+      ddgApi: true,
+      wikipedia: true,
+      tmdb: !!TMDB_API_KEY,
+      omdbImdb: !!OMDB_API_KEY
+    },
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
@@ -1200,21 +1289,15 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
     const deepFlag = deep === '1' || deep === 'true';
     const cached = await cacheManager.get(url, quality, deepFlag);
     if (cached) return res.json({ success: true, fromCache: true, ...cached });
-    const flightKey = `ex:${url}::${quality}::${deepFlag ? 1 : 0}`;
+    const flightKey = 'ex:' + url + '::' + quality + '::' + (deepFlag ? 1 : 0);
     if (singleFlight.get(flightKey)) return res.status(202).json({ success: true, message: 'Processing', dedup: true });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     const job = await extractionQueue.add(
       { type: 'extract', url, userId, quality, deep: deepFlag },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 3000 },
-        timeout: EXTRACT_TIMEOUT_MS + 40000,
-        removeOnComplete: 80,
-        removeOnFail: 40
-      }
+      { timeout: HARD_EXTRACT_MS + 20000, attempts: 2 }
     );
     singleFlight.set(flightKey, job.finished().catch(() => null));
-    res.status(202).json({ success: true, jobId: job.id, statusUrl: `/api/v1/jobs/${job.id}` });
+    res.status(202).json({ success: true, jobId: job.id, statusUrl: '/api/v1/jobs/' + job.id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1223,7 +1306,7 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
 app.get('/api/v1/search', verifyToken, async (req, res) => {
   try {
     const { q, extract, quality = 'auto', deep } = req.query;
-    if (!q?.trim()) return res.status(400).json({ success: false, error: 'q required' });
+    if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     const doExtract = extract === '1' || extract === 'true';
     const job = await extractionQueue.add(
@@ -1234,14 +1317,14 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
         quality,
         deep: deep === '1' || deep === 'true'
       },
-      { attempts: 2, timeout: doExtract ? EXTRACT_TIMEOUT_MS + 60000 : 45000, removeOnComplete: 50 }
+      { timeout: doExtract ? HARD_EXTRACT_MS + 30000 : HARD_SEARCH_MS + 10000, attempts: 2 }
     );
     res.status(202).json({
       success: true,
       jobId: job.id,
       query: String(q).trim(),
       mode: doExtract ? 'search_and_extract' : 'search_only',
-      statusUrl: `/api/v1/jobs/${job.id}`
+      statusUrl: '/api/v1/jobs/' + job.id
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -1253,18 +1336,13 @@ app.get('/api/v1/jobs/:jobId', verifyToken, async (req, res) => {
     const job = await extractionQueue.getJob(req.params.jobId);
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
-    if (job.data?.userId && String(job.data.userId) !== userId) {
+    if (job.data && job.data.userId && String(job.data.userId) !== userId) {
       return res.status(403).json({ success: false, error: 'Forbidden' });
     }
     const state = await job.getState();
     let result = null;
     if (state === 'completed') {
-      result = job.returnvalue ?? job._returnvalue ?? null;
-      if (!result) {
-        try {
-          result = await job.finished();
-        } catch (e) {}
-      }
+      result = job.returnvalue != null ? job.returnvalue : job._returnvalue != null ? job._returnvalue : null;
     }
     res.json({
       success: true,
@@ -1283,74 +1361,109 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
   res.json({ success: true, proxies: proxyManager.status() });
 });
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro Ultra', version: '4.0.0' } }));
+app.use(
+  '/api-docs',
+  swaggerUi.serve,
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.1.0' } })
+);
 
-extractionQueue.process(3, async (job) => {
+extractionQueue.process(2, async (job) => {
   let ctx = null;
   let proxy = null;
   try {
     const userId = job.data.userId;
 
     if (job.data.type === 'search') {
-      const results = await new SearchProvider().searchByName(job.data.search);
+      const results = await withTimeout(
+        new SearchProvider().searchByName(job.data.search),
+        HARD_SEARCH_MS,
+        'SEARCH_TIMEOUT'
+      );
       return {
         success: results.length > 0,
         query: job.data.search,
         results,
         count: results.length,
-        providers: ['ddg-api', 'wikipedia', TMDB_API_KEY ? 'tmdb' : null].filter(Boolean)
+        providers: ['ddg-api', 'wikipedia', TMDB_API_KEY ? 'tmdb' : null, OMDB_API_KEY ? 'omdb-imdb' : null].filter(
+          Boolean
+        )
       };
     }
 
     proxy = proxyManager.getNext();
     ctx = await browserPool.get(proxy);
-    const { page } = ctx;
+    const page = ctx.page;
 
     if (job.data.type === 'search_extract') {
-      const results = await new SearchProvider().searchByName(job.data.search);
+      const results = await withTimeout(
+        new SearchProvider().searchByName(job.data.search),
+        HARD_SEARCH_MS,
+        'SEARCH_TIMEOUT'
+      );
       if (!results.length) {
         return { success: false, query: job.data.search, results: [], errorCode: 'NO_SEARCH_RESULTS' };
       }
-      const preferred = results.find((r) => !/wikipedia\.org|themoviedb\.org/i.test(r.url)) || results[0];
-      const extraction = await circuitBreaker.run(() =>
-        new UltraExtractor().extract(preferred.url, page, userId, {
-          quality: job.data.quality,
-          deep: job.data.deep
-        })
-      );
+      const preferred =
+        results.find((r) => !/wikipedia\.org|themoviedb\.org|imdb\.com/i.test(r.url)) || results[0];
+      const extraction = await new VideoExtractor().extract(preferred.url, page, userId, {
+        quality: job.data.quality,
+        deep: job.data.deep
+      });
       return {
         success: !!extraction.success,
         query: job.data.search,
         matchedName: preferred.name,
         matchedUrl: preferred.url,
+        pageUrl: preferred.pageUrl || preferred.url,
         searchResults: results.slice(0, 10),
         extraction
       };
     }
 
-    const result = await circuitBreaker.run(() =>
-      new UltraExtractor().extract(job.data.url, page, userId, {
-        quality: job.data.quality,
-        deep: job.data.deep
-      })
-    );
+    const result = await new VideoExtractor().extract(job.data.url, page, userId, {
+      quality: job.data.quality,
+      deep: job.data.deep
+    });
 
     metrics.extractionDuration.labels(result.success ? 'success' : 'failure').observe(result.duration || 0);
     if (result.success) {
       metrics.sourceSuccess.inc();
       proxyManager.success(proxy);
       await cacheManager.set(job.data.url, result, job.data.quality || 'auto', !!job.data.deep);
+      if (db) {
+        try {
+          await db.collection('extractions').updateOne(
+            { jobId: String(job.id) },
+            {
+              $set: {
+                jobId: String(job.id),
+                userId: ObjectId.isValid(userId) ? new ObjectId(userId) : userId,
+                url: job.data.url,
+                result,
+                createdAt: new Date()
+              }
+            },
+            { upsert: true }
+          );
+        } catch (e) {}
+      }
     } else {
       metrics.sourceFailure.labels(result.errorCode || 'unknown').inc();
       proxyManager.fail(proxy);
     }
-    singleFlight.del(`ex:${job.data.url}::${job.data.quality || 'auto'}::${job.data.deep ? 1 : 0}`);
+
+    singleFlight.del('ex:' + job.data.url + '::' + (job.data.quality || 'auto') + '::' + (job.data.deep ? 1 : 0));
     return result;
   } catch (error) {
     logger.error({ jobId: job.id, error: error.message }, 'Job failed');
     proxyManager.fail(proxy);
-    if (/timeout|net::|Circuit breaker|Target closed/i.test(error.message || '')) throw error;
-    return { success: false, error: error.message, errorCode: 'JOB_EXCEPTION' };
+    const code = error.code || (error.message === 'EXTRACTION_TIMEOUT' ? 'EXTRACTION_TIMEOUT' : 'JOB_EXCEPTION');
+    return {
+      success: false,
+      error: error.message,
+      errorCode: code,
+      duration: 0
+    };
   } finally {
     if (ctx) browserPool.release(ctx);
   }
@@ -1360,7 +1473,7 @@ const wss = new WebSocketServer({ server: httpServer });
 wss.on('connection', async (ws, req) => {
   let uid = null;
   try {
-    const u = new URL(req.url || '', `http://${req.headers.host}`);
+    const u = new URL(req.url || '', 'http://' + req.headers.host);
     const token = u.searchParams.get('token');
     if (!token) return ws.close(4401, 'Unauthorized');
     const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
@@ -1378,7 +1491,7 @@ wss.on('connection', async (ws, req) => {
       if (data.type !== 'job_status' || !data.jobId) return;
       const job = await extractionQueue.getJob(data.jobId);
       if (!job) return ws.send(JSON.stringify({ type: 'error', message: 'Not found' }));
-      if (job.data?.userId && String(job.data.userId) !== uid) {
+      if (job.data && job.data.userId && String(job.data.userId) !== uid) {
         return ws.send(JSON.stringify({ type: 'error', message: 'Forbidden' }));
       }
       const state = await job.getState();
@@ -1408,24 +1521,22 @@ process.on('SIGINT', shutdown);
 
 (async () => {
   try {
-    logger.info('🚀 Vd-Pro Ultra v4.0 starting...');
+    logger.info('🚀 Vd-Pro v4.1 starting...');
     await connectDatabase();
     browserPool = new BrowserPool(2);
     await browserPool.init();
     httpServer.listen(PORT, '0.0.0.0', () => {
-      logger.info(`Vd-Pro Ultra on :${PORT}`);
+      logger.info('Vd-Pro v4.1 on :' + PORT);
       console.log(`
-╔════════════════════════════════════════════════════════════╗
-║  VD-PRO ULTRA v4.0                                         ║
-║  ✓ Pre-nav request/response capture                        ║
-║  ✓ In-page hooks (fetch/XHR/media/MSE)                     ║
-║  ✓ Multi-frame Play + currentSrc                           ║
-║  ✓ Player config JSON mining                               ║
-║  ✓ Deep second pass                                        ║
-║  ✓ HLS variants + ranking                                  ║
-║  ✓ CAPTCHA suspicion diagnostics                           ║
-║  extract?url=&deep=1&quality=1080p                         ║
-╚════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════╗
+║  VD-PRO v4.1 STABLE                                      ║
+║  ✓ Hard timeout — no stuck active jobs                   ║
+║  ✓ Always returns result object                          ║
+║  ✓ m3u8 / mp4 / webm / mpd + multi-quality               ║
+║  ✓ Subtitles when found                                  ║
+║  ✓ Search: DDG + Wikipedia + TMDB + OMDb/IMDb            ║
+║  HARD_EXTRACT_MS=${HARD_EXTRACT_MS}                                        ║
+╚══════════════════════════════════════════════════════════╝
 `);
     });
   } catch (e) {
