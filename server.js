@@ -185,9 +185,24 @@ class SSRFValidator {
 function resolveUrl(base, rel) {
   try {
     if (!rel) return null;
-    const value = String(rel).trim().replace(/\\u0026/gi, '&').replace(/\\u003d/gi, '=').replace(/\\\//g, '/');
+    let value = String(rel).trim();
+    value = value
+      .replace(/&amp;/gi, '&')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#x2f;|&#47;/gi, '/')
+      .replace(/\\u0026/gi, '&')
+      .replace(/\\u003d/gi, '=')
+      .replace(/\\u003a/gi, ':')
+      .replace(/\\u002f/gi, '/')
+      .replace(/\\\//g, '/');
+    try {
+      if (/%[0-9a-f]{2}/i.test(value)) value = decodeURIComponent(value);
+    } catch (e) {}
     if (/^(https?:|blob:|data:)/i.test(value)) return value;
-    if (value.startsWith('//')) return 'https:' + value;
+    if (value.startsWith('//')) {
+      const scheme = String(base || '').startsWith('http:') ? 'http:' : 'https:';
+      return scheme + value;
+    }
     return new URL(value, base).href;
   } catch (e) {
     return null;
@@ -359,6 +374,71 @@ const httpClient = axios.create({
   validateStatus: (s) => s >= 200 && s < 400
 });
 
+class DASHParser {
+  static attr(tag, name) {
+    const re = new RegExp('\\b' + name + '\\s*=\\s*[\"\\\']([^\"\\\']*)[\"\\\']', 'i');
+    return re.exec(tag)?.[1] || null;
+  }
+
+  static quality(height, width) {
+    const h = Number(height || 0);
+    const w = Number(width || 0);
+    if (h >= 2160 || w >= 3840) return '2160p';
+    if (h >= 1440 || w >= 2560) return '1440p';
+    if (h >= 1080 || w >= 1920) return '1080p';
+    if (h >= 720 || w >= 1280) return '720p';
+    if (h >= 480 || w >= 854) return '480p';
+    return h ? h + 'p' : 'dash';
+  }
+
+  static parse(mpd, baseUrl) {
+    const variants = [];
+    const subtitles = [];
+    const baseFromMpd = resolveUrl(baseUrl, /<BaseURL[^>]*>([^<]+)<\/BaseURL>/i.exec(mpd)?.[1] || '') || baseUrl;
+    const reps = [...String(mpd || '').matchAll(/<Representation\b([^>]*)>([\s\S]*?)<\/Representation>/gi)];
+    for (const match of reps) {
+      const attrs = match[1] || '';
+      const body = match[2] || '';
+      const mime = (DASHParser.attr(attrs, 'mimeType') || '').toLowerCase();
+      const contentType = (DASHParser.attr(attrs, 'contentType') || '').toLowerCase();
+      if (contentType === 'text' || mime.includes('text') || mime.includes('application/ttml')) continue;
+      const id = DASHParser.attr(attrs, 'id') || null;
+      const bandwidth = Number(DASHParser.attr(attrs, 'bandwidth') || 0);
+      const width = Number(DASHParser.attr(attrs, 'width') || 0);
+      const height = Number(DASHParser.attr(attrs, 'height') || 0);
+      const repBase = resolveUrl(baseFromMpd, /<BaseURL[^>]*>([^<]+)<\/BaseURL>/i.exec(body)?.[1] || '') || baseFromMpd;
+      if (!repBase || !/^https?:/i.test(repBase)) continue;
+      variants.push({ url: repBase, id, bandwidth, resolution: width && height ? width + 'x' + height : null, quality: DASHParser.quality(height, width), type: 'dash' });
+    }
+    for (const match of String(mpd || '').matchAll(/<AdaptationSet\b([^>]*)>([\s\S]*?)<\/AdaptationSet>/gi)) {
+      const attrs = match[1] || '';
+      const body = match[2] || '';
+      const mime = (DASHParser.attr(attrs, 'mimeType') || '').toLowerCase();
+      const contentType = (DASHParser.attr(attrs, 'contentType') || '').toLowerCase();
+      if (!(contentType === 'text' || mime.includes('text') || mime.includes('ttml') || mime.includes('vtt'))) continue;
+      const lang = DASHParser.attr(attrs, 'lang');
+      const label = DASHParser.attr(attrs, 'label') || lang || 'subtitle';
+      for (const u of body.matchAll(/<BaseURL[^>]*>([^<]+)<\/BaseURL>/gi)) {
+        const abs = resolveUrl(baseFromMpd, u[1]);
+        if (abs) subtitles.push({ url: abs, language: lang || null, label, type: 'dash' });
+      }
+    }
+    return { variants, subtitles };
+  }
+
+  static async enrich(mpdUrl, referer = null) {
+    try {
+      const text = await HLSParser.fetchText(mpdUrl, referer);
+      if (!/<MPD[\s>]/i.test(text)) return { variants: [], subtitles: [] };
+      const parsed = DASHParser.parse(text, mpdUrl);
+      if (!parsed.variants.length) parsed.variants.push({ url: mpdUrl, quality: 'dash', bandwidth: 0, type: 'dash' });
+      return parsed;
+    } catch (e) {
+      return { variants: [{ url: mpdUrl, quality: 'dash', bandwidth: 0, type: 'dash' }], subtitles: [] };
+    }
+  }
+}
+
 class HLSParser {
   static async fetchText(url, referer = null) {
     const res = await httpClient.get(url, {
@@ -407,10 +487,13 @@ class HLSParser {
       if (!line.startsWith('#EXT-X-MEDIA:') || !/TYPE=SUBTITLES/i.test(line)) continue;
       const name = /NAME="([^"]+)"/i.exec(line)?.[1];
       const lang = /LANGUAGE="([^"]+)"/i.exec(line)?.[1];
+      const group = /GROUP-ID="([^"]+)"/i.exec(line)?.[1];
+      const isDefault = /DEFAULT=YES/i.test(line);
+      const forced = /FORCED=YES/i.test(line);
       const uri = /URI="([^"]+)"/i.exec(line)?.[1];
       if (!uri) continue;
       const abs = resolveUrl(baseUrl, uri);
-      if (abs) subs.push({ url: abs, language: lang || null, label: name || lang || 'subtitle', type: 'hls' });
+      if (abs) subs.push({ url: abs, language: lang || null, label: name || lang || 'subtitle', group: group || null, default: isDefault, forced, type: 'hls' });
     }
     return subs;
   }
@@ -820,7 +903,8 @@ function mediaResponsePredicate(res) {
   try {
     const u = res.url();
     if (!u || isRejectedMediaUrl(u) || isJunkMediaUrl(u)) return false;
-    return /\.m3u8(?:\?|#|$)/i.test(u) || /\.mpd(?:\?|#|$)/i.test(u) || /\.mp4(?:\?|#|$)/i.test(u) || /\/manifest/i.test(u);
+    const ct = String(res.headers?.()['content-type'] || '').toLowerCase();
+    return /\.m3u8(?:\?|#|$)/i.test(u) || /\.mpd(?:\?|#|$)/i.test(u) || /\.mp4(?:\?|#|$)/i.test(u) || /\/manifest/i.test(u) || /mpegurl|dash\+xml|application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|^video\//i.test(ct);
   } catch (e) {
     return false;
   }
@@ -1033,7 +1117,7 @@ class VideoExtractor {
       [/(https?:\/\/[^"'\\s<>{}]+?\.mp4[^"'\\s<>{}]*)/gi, 'mp4'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.mpd[^"'\\s<>{}]*)/gi, 'mpd'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.webm[^"'\\s<>{}]*)/gi, 'webm'],
-      [/(https?:\/\/[^"'\\s<>{}]+?\.(vtt|srt)[^"'\\s<>{}]*)/gi, 'subtitles']
+      [/(https?:\/\/[^"'\\s<>{}]+?\.(vtt|srt|ass|ssa|ttml)(?:\?|#|$)[^"'\\s<>{}]*)/gi, 'subtitles']
     ];
     for (const [re, key] of rules) {
       let m;
@@ -1360,7 +1444,7 @@ class VideoExtractor {
     const variants = [];
     const subtitles = [];
     const hlsResults = await Promise.all(
-      result.urls.m3u8.slice(0, 8).map(async (m) => {
+      result.urls.m3u8.slice(0, 16).map(async (m) => {
         try {
           return await withTimeout(HLSParser.enrich(m, mediaReferers.get(m) || pageUrl), 8000, 'HLS_TIMEOUT');
         } catch (e) {
@@ -1375,9 +1459,21 @@ class VideoExtractor {
       }
       subtitles.push(...(en.subtitles || []));
     }
+    const dashResults = await Promise.all(
+      result.urls.mpd.slice(0, 12).map(async (m) => {
+        try {
+          return await withTimeout(DASHParser.enrich(m, mediaReferers.get(m) || pageUrl), 8000, 'DASH_TIMEOUT');
+        } catch (e) {
+          return { variants: [{ url: m, quality: 'dash', bandwidth: 0, type: 'dash' }], subtitles: [] };
+        }
+      })
+    );
+    for (const en of dashResults) {
+      variants.push(...(en.variants || []));
+      subtitles.push(...(en.subtitles || []));
+    }
     for (const m of result.urls.mp4) variants.push({ url: m, quality: 'mp4', bandwidth: 0, type: 'mp4' });
     for (const m of result.urls.webm) variants.push({ url: m, quality: 'webm', bandwidth: 0, type: 'webm' });
-    for (const m of result.urls.mpd) variants.push({ url: m, quality: 'dash', bandwidth: 0, type: 'dash' });
     for (const m of result.urls.other) variants.push({ url: m, quality: 'other', bandwidth: 0, type: 'other' });
     for (const s of result.urls.subtitles) {
       subtitles.push({ url: s, language: null, label: 'subtitle', type: 'file' });
