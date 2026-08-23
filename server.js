@@ -1,8 +1,13 @@
 /**
- * Vd-Pro v4.1 — Stable Ultra
- * Fixes: hard extraction timeout, jobs never hang in active, always return result
- * Features: deep extract, HLS/MP4/DASH, multi-quality, subtitles when found,
- *           search via DDG API + Wikipedia + TMDB + OMDb/IMDb
+ * Vd-Pro v4.2.1 — Hardened production extractor (same API)
+ *
+ * Honest limits (not bugs to "fix"):
+ * - DRM / Widevine: detected & reported, NOT decrypted
+ * - Interactive CAPTCHA: detected & reported, NOT solved
+ * - Short-lived signed URLs: linkMeta + soft revalidate
+ * - Closed players: clearer CLOSED_PLAYER_OR_BLOB_ONLY code
+ *
+ * Same API: /health /auth/register /extract /search /jobs /proxy-status
  */
 
 import express from 'express';
@@ -45,6 +50,9 @@ const HARD_EXTRACT_MS = parseInt(process.env.HARD_EXTRACT_MS || '75000', 10);
 const HARD_SEARCH_MS = parseInt(process.env.HARD_SEARCH_MS || '25000', 10);
 const NAV_TIMEOUT_MS = parseInt(process.env.NAV_TIMEOUT_MS || '35000', 10);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
+const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
+const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
+const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
 
 if (NODE_ENV === 'production' && (!JWT_SECRET || JWT_SECRET.length < 32)) {
   console.error('FATAL: JWT_SECRET must be set and at least 32 characters in production');
@@ -119,7 +127,7 @@ async function connectDatabase() {
       db.collection('cache').createIndex({ contentHash: 1 }, { unique: true }),
       db.collection('sessions').createIndex({ userId: 1 })
     ]);
-    logger.info('✅ MongoDB connected');
+    logger.info('MongoDB connected');
     return true;
   } catch (e) {
     logger.error({ error: e.message }, 'MongoDB failed');
@@ -135,22 +143,13 @@ const redis = new Redis(REDIS_URL, {
   commandTimeout: 5000
 });
 redis.on('error', (e) => logger.warn({ error: e.message }, 'Redis'));
-redis.on('connect', () => logger.info('✅ Redis connected'));
+redis.on('connect', () => logger.info('Redis connected'));
 
 class SSRFValidator {
   static PRIVATE = [
-    /^localhost$/i,
-    /^127\./,
-    /^10\./,
-    /^172\.(1[6-9]|2[0-9]|3[01])\./,
-    /^192\.168\./,
-    /^169\.254\./,
-    /^0\.0\.0\.0$/,
-    /^::1$/,
-    /^fc00:/i,
-    /^fd[0-9a-f]{2}:/i,
-    /^fe80:/i,
-    /^ff00:/i,
+    /^localhost$/i, /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[01])\./,
+    /^192\.168\./, /^169\.254\./, /^0\.0\.0\.0$/, /^::1$/,
+    /^fc00:/i, /^fd[0-9a-f]{2}:/i, /^fe80:/i, /^ff00:/i,
     /^100\.(6[4-9]|[7-9][0-9]|1[0-2][0-9])\./
   ];
   static isPrivate(host) {
@@ -187,7 +186,7 @@ function resolveUrl(base, rel) {
     if (!rel) return null;
     const value = String(rel).trim().replace(/\\u0026/gi, '&').replace(/\\u003d/gi, '=').replace(/\\\//g, '/');
     if (/^(https?:|blob:|data:)/i.test(value)) return value;
-    if (value.startsWith('//')) return `https:${value}`;
+    if (value.startsWith('//')) return 'https:' + value;
     return new URL(value, base).href;
   } catch (e) {
     return null;
@@ -212,12 +211,13 @@ function extractUrlCandidates(value = '', base = '') {
   const re = /(?:https?:)?\/\/[^\s"'<>`\\]+/gi;
   let match;
   while ((match = re.exec(decoded)) !== null) add(match[0]);
-  if (base && /^(?:https?:)?\/\//i.test(decoded.trim())) add(decoded.trim());
   return [...found];
 }
 
 function isRejectedMediaUrl(url = '') {
-  return /doubleclick\.net|googlesyndication\.com|google-analytics\.com|googletagmanager\.com|analytics|tracking|tracker|pixel|beacon|adservice|adsystem|advert|banner|\/ads?(?:\/|\?|$)/i.test(String(url || ''));
+  return /doubleclick\.net|googlesyndication\.com|google-analytics\.com|googletagmanager\.com|facebook\.com\/tr|hotjar|clarity\.ms|scorecardresearch|analytics|tracking|tracker|pixel|beacon|adservice|adsystem|advert|banner|\/ads?(?:\/|\?|$)/i.test(
+    String(url || '')
+  );
 }
 
 function isMediaSegment(url = '') {
@@ -228,9 +228,10 @@ function looksLikeMedia(url = '', ct = '') {
   const u = String(url || '').toLowerCase();
   const c = String(ct || '').toLowerCase();
   if (isRejectedMediaUrl(u)) return false;
-  if (/\.(m3u8|mp4|webm|mpd|m4s|ts|m4v|mov|mkv|avi|flv|ogv|ogg|aac|mp3|wav)(\?|#|$)/i.test(u)) return true;
-  if (/\/hls\/|\/dash\/|\/manifest(?:\/|\?|$)|playlist|master\.json|videoplayback|\bsegment\b|\bchunk\b/i.test(u)) return true;
-  if (c.includes('mpegurl') || c.includes('dash+xml') || c.includes('vnd.apple') || c.startsWith('video/') || c.startsWith('audio/') || c.includes('octet-stream')) return true;
+  if (/\.(m3u8|mp4|webm|mpd|m4v|mov|mkv)(\?|#|$)/i.test(u)) return true;
+  if (/\.(m4s|ts)(\?|#|$)/i.test(u)) return true;
+  if (/\/hls\/|\/dash\/|\/manifest(?:\/|\?|$)|playlist|master\.json|videoplayback/i.test(u)) return true;
+  if (c.includes('mpegurl') || c.includes('dash+xml') || c.includes('vnd.apple') || c.startsWith('video/')) return true;
   return false;
 }
 
@@ -242,7 +243,7 @@ function classifyMedia(url = '', ct = '') {
   if (isMediaSegment(u)) return 'segment';
   if (u.includes('.webm') || c.includes('webm')) return 'webm';
   if (u.includes('.mp4') || c.includes('mp4') || c.startsWith('video/')) return 'mp4';
-  if (/\.(m4v|mov|mkv|avi|flv|ogv|ogg|aac|mp3|wav)(?:\?|#|$)/i.test(u) || c.startsWith('audio/')) return 'other';
+  if (/\.(m4v|mov|mkv)(?:\?|#|$)/i.test(u)) return 'other';
   if (looksLikeMedia(url, ct)) return 'm3u8';
   return null;
 }
@@ -257,10 +258,10 @@ function looksLikeSubtitle(url = '', ct = '') {
 }
 
 function extractLinkMeta(url, referer = null) {
-  const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null };
+  const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null, likelySigned: false };
   try {
     const parsed = new URLParser(url);
-    const keys = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at', 'valid_until'];
+    const keys = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at', 'valid_until', 'token_exp'];
     let raw = null;
     for (const key of keys) {
       raw = parsed.searchParams.get(key);
@@ -268,57 +269,60 @@ function extractLinkMeta(url, referer = null) {
     }
     if (raw) {
       const numeric = Number(raw);
-      const date = Number.isFinite(numeric)
-        ? new Date(numeric < 1e12 ? numeric * 1000 : numeric)
-        : new Date(raw);
+      const date = Number.isFinite(numeric) ? new Date(numeric < 1e12 ? numeric * 1000 : numeric) : new Date(raw);
       if (!Number.isNaN(date.getTime())) {
         meta.expiresAt = date.toISOString();
         meta.ttlSeconds = Math.max(0, Math.floor((date.getTime() - Date.now()) / 1000));
+        meta.likelySigned = true;
       }
     }
+    if (/[?&](signature|sig|token|hdnts|auth)=/i.test(url)) meta.likelySigned = true;
   } catch (e) {}
   return meta;
 }
 
-function rankScore(url) {
+function rankScore(url, extra = {}) {
   const u = String(url || '').toLowerCase();
   let s = 0;
   if (u.includes('.mp4')) s += 55;
-  if (u.includes('.m3u8')) s += 45;
+  if (u.includes('.m3u8')) s += 48;
   if (u.includes('.mpd')) s += 40;
+  if (/master|playlist|index\.m3u8/i.test(u)) s += 8;
   if (/2160|4k/.test(u)) s += 30;
   if (/1080|1920/.test(u)) s += 22;
   if (/720/.test(u)) s += 14;
   if (/480|360/.test(u)) s += 4;
+  if (extra.bandwidth) s += Math.min(12, Math.floor(Number(extra.bandwidth) / 2_000_000));
+  if (extra.validated) s += 20;
+  if (extra.drmSuspected) s -= 60;
   if (/preview|trailer|thumb|poster|sample/.test(u)) s -= 25;
+  if (isMediaSegment(u)) s -= 40;
   if (u.startsWith('blob:')) s -= 50;
   return s;
 }
 
 function pickByQuality(variants, quality = 'auto') {
   if (!variants?.length) return null;
+  const scoreOf = (v) =>
+    rankScore(v.url, {
+      bandwidth: v.bandwidth,
+      validated: !!v.validation?.valid,
+      drmSuspected: !!v.drmSuspected || v.validation?.drmSuspected
+    });
   if (!quality || quality === 'auto') {
-    return [...variants].sort((a, b) => rankScore(b.url) - rankScore(a.url))[0];
+    return [...variants].sort((a, b) => scoreOf(b) - scoreOf(a))[0];
   }
   const q = String(quality).toLowerCase();
-  return (
-    variants.find(
-      (v) => String(v.quality || '').toLowerCase().includes(q) || String(v.url || '').toLowerCase().includes(q)
-    ) || variants[0]
+  const matched = variants.filter(
+    (v) => String(v.quality || '').toLowerCase().includes(q) || String(v.url || '').toLowerCase().includes(q)
   );
+  if (matched.length) return [...matched].sort((a, b) => scoreOf(b) - scoreOf(a))[0];
+  return [...variants].sort((a, b) => scoreOf(b) - scoreOf(a))[0];
 }
 
 function titleSimilarity(a, b) {
-  const na = String(a || '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const nb = String(b || '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const na = String(a || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const nb = String(b || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!na || !nb) return 0;
   if (na === nb) return 1;
   if (na.includes(nb) || nb.includes(na)) return 0.9;
@@ -368,7 +372,7 @@ class HLSParser {
       let quality = name?.[1] || null;
       if (!quality && res) {
         const h = parseInt(res[1].split('x')[1], 10);
-        quality = h >= 2160 ? '2160p' : h >= 1080 ? '1080p' : h >= 720 ? '720p' : h >= 480 ? '480p' : `${h}p`;
+        quality = h >= 2160 ? '2160p' : h >= 1080 ? '1080p' : h >= 720 ? '720p' : h >= 480 ? '480p' : h + 'p';
       }
       variants.push({
         url: abs,
@@ -401,6 +405,12 @@ class HLSParser {
     try {
       const text = await this.fetchText(m3u8Url, referer);
       if (!text.includes('#EXTM3U')) return { variants: [], subtitles: [] };
+      if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(text)) {
+        return {
+          variants: [{ url: m3u8Url, quality: 'encrypted', bandwidth: 0, type: 'hls', drmSuspected: true }],
+          subtitles: this.parseSubtitles(text, m3u8Url)
+        };
+      }
       const subtitles = this.parseSubtitles(text, m3u8Url);
       if (text.includes('#EXT-X-STREAM-INF')) {
         return { variants: this.parseMaster(text, m3u8Url), subtitles };
@@ -417,6 +427,7 @@ const PAGE_HOOK_SCRIPT = `
   if (window.__vdProHooks) return;
   window.__vdProHooks = true;
   window.__vdCaptured = [];
+  window.__vdSignals = { mse: false, eme: false };
   function push(u, why){
     try {
       if (!u || typeof u !== 'string') return;
@@ -442,6 +453,24 @@ const PAGE_HOOK_SCRIPT = `
       try { if (url) push(String(url), 'xhr'); } catch(e){}
       return xo.apply(this, arguments);
     };
+  } catch(e){}
+  try {
+    if (window.MediaSource && MediaSource.prototype.addSourceBuffer) {
+      var add = MediaSource.prototype.addSourceBuffer;
+      MediaSource.prototype.addSourceBuffer = function(){
+        try { window.__vdSignals.mse = true; } catch(e){}
+        return add.apply(this, arguments);
+      };
+    }
+  } catch(e){}
+  try {
+    if (navigator.requestMediaKeySystemAccess) {
+      var orig = navigator.requestMediaKeySystemAccess.bind(navigator);
+      navigator.requestMediaKeySystemAccess = function(){
+        try { window.__vdSignals.eme = true; } catch(e){}
+        return orig.apply(null, arguments);
+      };
+    }
   } catch(e){}
 })();
 `;
@@ -493,8 +522,8 @@ class ProxyManager {
     return this.proxies.map((p) => {
       let safe = p.url;
       try {
-        const u = new URL(p.url.includes('://') ? p.url : `http://${p.url}`);
-        if (u.username || u.password) safe = `${u.protocol}//${u.hostname}${u.port ? ':' + u.port : ''}`;
+        const u = new URL(p.url.includes('://') ? p.url : 'http://' + p.url);
+        if (u.username || u.password) safe = u.protocol + '//' + u.hostname + (u.port ? ':' + u.port : '');
       } catch (e) {
         safe = '[redacted]';
       }
@@ -508,7 +537,7 @@ class SessionManager {
   async load(userId) {
     if (!userId) return [];
     try {
-      const c = await redis.get(`session:${userId}`);
+      const c = await redis.get('session:' + userId);
       if (c) return JSON.parse(c).cookies || [];
     } catch (e) {}
     return [];
@@ -516,7 +545,7 @@ class SessionManager {
   async save(userId, cookies) {
     if (!userId) return;
     try {
-      await redis.setex(`session:${userId}`, 604800, JSON.stringify({ cookies }));
+      await redis.setex('session:' + userId, 604800, JSON.stringify({ cookies }));
     } catch (e) {}
   }
 }
@@ -537,9 +566,7 @@ class BrowserContextPool {
       serviceWorkers: 'block',
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      extraHTTPHeaders: {
-        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8'
-      }
+      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8' }
     };
     if (proxy?.url) opts.proxy = { server: proxy.url };
     const context = await this.browser.newContext(opts);
@@ -588,7 +615,9 @@ class BrowserContextPool {
       if (ctx.context) ctx.context.__vdClosed = true;
       await ctx.page?.close?.().catch(() => {});
     } catch (e) {}
-    try { await ctx.context?.close?.().catch(() => {}); } catch (e) {}
+    try {
+      await ctx.context?.close?.().catch(() => {});
+    } catch (e) {}
   }
   async closeAll() {
     await Promise.all([...this.available, ...this.inUse.keys()].map((c) => this.close(c)));
@@ -623,7 +652,7 @@ class BrowserPool {
       await pool.init();
       this.pools.push(pool);
     }
-    logger.info({ browsers: this.n }, '✅ Browser pool ready');
+    logger.info({ browsers: this.n }, 'Browser pool ready');
   }
   async get(proxy = null) {
     if (!this.pools.length) throw new Error('No browser pools');
@@ -647,11 +676,8 @@ async function tryClickPlay(page) {
     '.vjs-big-play-button',
     '.plyr__control--overlaid',
     '.jw-icon-display',
-    '.jw-display-icon-container',
-    '.html5-video-player .ytp-large-play-button',
     'button.play',
     '[class*="play-button" i]',
-    '[class*="playButton" i]',
     'video'
   ];
   let clicked = false;
@@ -666,6 +692,71 @@ async function tryClickPlay(page) {
     }
   }
   return clicked;
+}
+
+class ResultValidator {
+  static inspect(url, status, contentType, body = '') {
+    if (status < 200 || status >= 400) return { valid: false, reason: 'INVALID_STATUS', status, contentType };
+    if (/\.m3u8(?:\?|#|$)/i.test(url) && !String(body || '').includes('#EXTM3U')) {
+      return { valid: false, reason: 'INVALID_M3U8', status, contentType };
+    }
+    if (/\.mpd(?:\?|#|$)/i.test(url) && !/<MPD[\s>]/i.test(String(body || ''))) {
+      return { valid: false, reason: 'INVALID_MPD', status, contentType };
+    }
+    if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(String(body || ''))) {
+      return { valid: false, reason: 'DRM_OR_ENCRYPTED_HLS', status, contentType, drmSuspected: true };
+    }
+    return { valid: true, reason: null, status, contentType };
+  }
+
+  static async validateWithPage(url, page, referer = null) {
+    if (!page?.context || page.context().__vdClosed) return { valid: false, reason: 'NO_PAGE_CONTEXT' };
+    try {
+      const response = await page.context().request.get(url, {
+        timeout: 7000,
+        failOnStatusCode: false,
+        maxRedirects: 4,
+        headers: { Accept: '*/*', ...(referer ? { Referer: referer } : {}) }
+      });
+      const contentType = response.headers()['content-type'] || '';
+      const body = /m3u8|mpd|manifest|playlist/i.test(url) ? await response.text().catch(() => '') : '';
+      return this.inspect(url, response.status(), contentType, body);
+    } catch (e) {
+      return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
+    }
+  }
+
+  static async validate(url, referer = null) {
+    if (!url) return { valid: false, reason: 'NO_URL' };
+    try {
+      new URLParser(url);
+    } catch (e) {
+      return { valid: false, reason: 'INVALID_URL' };
+    }
+    try {
+      const headers = {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        Range: 'bytes=0-8192'
+      };
+      if (referer) {
+        headers.Referer = referer;
+        try {
+          headers.Origin = new URLParser(referer).origin;
+        } catch (e) {}
+      }
+      const res = await axios.get(url, {
+        timeout: 10000,
+        maxRedirects: 3,
+        maxContentLength: 250000,
+        validateStatus: () => true,
+        headers
+      });
+      return this.inspect(url, res.status, res.headers?.['content-type'] || '', res.data || '');
+    } catch (e) {
+      return { valid: false, reason: 'VALIDATION_FAILED' };
+    }
+  }
 }
 
 class VideoExtractor {
@@ -730,7 +821,7 @@ class VideoExtractor {
       [/(https?:\/\/[^"'\\s<>{}]+?\.mp4[^"'\\s<>{}]*)/gi, 'mp4'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.mpd[^"'\\s<>{}]*)/gi, 'mpd'],
       [/(https?:\/\/[^"'\\s<>{}]+?\.webm[^"'\\s<>{}]*)/gi, 'webm'],
-      [/(https?:\/\/[^"'\\s<>{}]+?\.(vtt|srt|ass|ssa)[^"'\\s<>{}]*)/gi, 'subtitles']
+      [/(https?:\/\/[^"'\\s<>{}]+?\.(vtt|srt)[^"'\\s<>{}]*)/gi, 'subtitles']
     ];
     for (const [re, key] of rules) {
       let m;
@@ -740,15 +831,6 @@ class VideoExtractor {
       }
     }
     for (const candidate of extractUrlCandidates(html, base)) this.add(bags, candidate);
-    $('script[type="application/ld+json"], script[type="application/json"]').each((_, el) => {
-      for (const candidate of extractUrlCandidates($(el).text(), base)) this.add(bags, candidate);
-    });
-    $('video, audio').each((_, el) => {
-      const srcset = $(el).attr('srcset') || $(el).attr('data-srcset');
-      if (srcset) {
-        for (const item of srcset.split(',')) this.add(bags, resolveUrl(base, item.trim().split(/\s+/)[0]));
-      }
-    });
     const cfg =
       /"(?:file|src|source|sources|hls|dash|playlist|stream|videoUrl|mediaUrl|playbackUrl)"\s*:\s*"([^"]+)"/gi;
     let cm;
@@ -769,7 +851,10 @@ class VideoExtractor {
       playClicked: false,
       strategies: [],
       captchaSuspected: false,
-      timedOut: false
+      drmSuspected: false,
+      mseDetected: false,
+      timedOut: false,
+      softRetry: false
     };
 
     const result = {
@@ -783,6 +868,7 @@ class VideoExtractor {
       strategy: null,
       quality,
       validated: false,
+      linkMeta: null,
       error: null,
       errorCode: null,
       diagnostics,
@@ -808,6 +894,7 @@ class VideoExtractor {
         }
       } catch (e) {}
     };
+
     const onResponse = async (response) => {
       try {
         const u = response.url();
@@ -823,6 +910,7 @@ class VideoExtractor {
           if (/manifest|playlist|stream|media|video|source|\.json(?:\?|$)/i.test(path)) {
             const body = await response.text().catch(() => '');
             if (/^\s*#EXTM3U/m.test(body) || /<MPD[\s>]/i.test(body)) this.add(bags, u, ct);
+            if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(body)) diagnostics.drmSuspected = true;
           }
         }
       } catch (e) {}
@@ -836,9 +924,6 @@ class VideoExtractor {
     };
     page.on('request', onRequest);
     page.on('response', onResponse);
-    page.on('websocket', (ws) => {
-      try { this.add(bags, ws.url()); } catch (e) {}
-    });
     page.context().on('page', onContextPage);
 
     const work = async () => {
@@ -857,9 +942,15 @@ class VideoExtractor {
 
       try {
         result.pageTitle = await page.title();
-        const snippet = await page.evaluate(() => (document.body && document.body.innerText ? document.body.innerText.slice(0, 1500) : ''));
-        if (/captcha|cloudflare|verify you are human|attention required/i.test(String(result.pageTitle) + ' ' + snippet)) {
+        const snippet = await page.evaluate(() =>
+          document.body && document.body.innerText ? document.body.innerText.slice(0, 1800) : ''
+        );
+        const blob = (result.pageTitle || '') + ' ' + snippet;
+        if (/captcha|cloudflare|verify you are human|attention required|cf-challenge/i.test(blob)) {
           diagnostics.captchaSuspected = true;
+        }
+        if (/widevine|fairplay|playready|drm|encrypted media/i.test(blob)) {
+          diagnostics.drmSuspected = true;
         }
       } catch (e) {}
 
@@ -874,29 +965,16 @@ class VideoExtractor {
       diagnostics.strategies.push('network');
 
       try {
-        const html = await page.content();
-        this.mineHtml(html, bags, pageUrl);
+        this.mineHtml(await page.content(), bags, pageUrl);
         diagnostics.strategies.push('dom');
       } catch (e) {}
 
       try {
         const mediaUrls = await page.evaluate(() => {
           const out = [];
-            document.querySelectorAll('video, audio').forEach((v) => {
-              if (v.currentSrc) out.push(v.currentSrc);
-              if (v.src) out.push(v.src);
-              v.querySelectorAll('source').forEach((s) => {
-                if (s.src) out.push(s.src);
-              });
-            });
-            document.querySelectorAll('source').forEach((s) => {
-              if (s.src) out.push(s.src);
-            });
-          document.querySelectorAll('track').forEach((t) => {
-            if (t.src) out.push(t.src);
-          });
-          document.querySelectorAll('link[rel="preload"][as="video"], link[rel="preload"][as="audio"]').forEach((l) => {
-            if (l.href) out.push(l.href);
+          document.querySelectorAll('video, audio, source').forEach((v) => {
+            if (v.currentSrc) out.push(v.currentSrc);
+            if (v.src) out.push(v.src);
           });
           try {
             performance.getEntriesByType('resource').forEach((entry) => out.push(entry.name));
@@ -905,6 +983,12 @@ class VideoExtractor {
           return out;
         });
         mediaUrls.forEach((u) => this.add(bags, u));
+        const signals = await page.evaluate(() => ({
+          mse: !!(window.__vdSignals && window.__vdSignals.mse),
+          eme: !!(window.__vdSignals && window.__vdSignals.eme)
+        }));
+        diagnostics.mseDetected = !!signals.mse;
+        if (signals.eme) diagnostics.drmSuspected = true;
         diagnostics.strategies.push('hooks');
       } catch (e) {}
 
@@ -913,18 +997,13 @@ class VideoExtractor {
         diagnostics.framesVisited = page.frames().length;
         for (const frame of frames) {
           try {
-            const html = await frame.content();
-            this.mineHtml(html, bags, pageUrl);
+            this.mineHtml(await frame.content(), bags, pageUrl);
             const fu = await frame.evaluate(() => {
               const out = [];
-              document.querySelectorAll('video, audio, source').forEach((v) => {
+              document.querySelectorAll('video, audio, source, iframe').forEach((v) => {
                 if (v.currentSrc) out.push(v.currentSrc);
                 if (v.src) out.push(v.src);
-                if (v.getAttribute('data-src')) out.push(v.getAttribute('data-src'));
-              });
-              document.querySelectorAll('iframe').forEach((f) => {
-                if (f.src) out.push(f.src);
-                if (f.getAttribute('data-src')) out.push(f.getAttribute('data-src'));
+                if (v.getAttribute && v.getAttribute('data-src')) out.push(v.getAttribute('data-src'));
               });
               (window.__vdCaptured || []).forEach((x) => out.push(x.url));
               return out;
@@ -932,7 +1011,6 @@ class VideoExtractor {
             fu.forEach((u) => this.add(bags, u));
           } catch (e) {}
         }
-        diagnostics.framesVisited = Math.max(diagnostics.framesVisited, page.frames().length);
         diagnostics.strategies.push('frames');
       } catch (e) {}
 
@@ -956,11 +1034,7 @@ class VideoExtractor {
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         await page.waitForTimeout(3500);
         try {
-          const html2 = await page.content();
-          this.mineHtml(html2, bags, pageUrl);
-          for (const frame of page.frames().slice(0, 10)) {
-            try { this.mineHtml(await frame.content(), bags, pageUrl); } catch (e) {}
-          }
+          this.mineHtml(await page.content(), bags, pageUrl);
         } catch (e) {}
         diagnostics.strategies.push('deep-pass');
       }
@@ -990,9 +1064,8 @@ class VideoExtractor {
         }
         if (diagnostics.timedOut) {
           try {
-            const context = page.context();
-            context.__vdClosed = true;
-            await context.close();
+            page.context().__vdClosed = true;
+            await page.context().close();
           } catch (e) {}
         }
       } catch (e) {}
@@ -1012,7 +1085,10 @@ class VideoExtractor {
       })
     );
     for (const en of hlsResults) {
-      variants.push(...(en.variants?.length ? en.variants : []));
+      for (const v of en.variants || []) {
+        if (v.drmSuspected) diagnostics.drmSuspected = true;
+        variants.push(v);
+      }
       subtitles.push(...(en.subtitles || []));
     }
     for (const m of result.urls.mp4) variants.push({ url: m, quality: 'mp4', bandwidth: 0, type: 'mp4' });
@@ -1023,47 +1099,129 @@ class VideoExtractor {
       subtitles.push({ url: s, language: null, label: 'subtitle', type: 'file' });
     }
 
-        const uniqueVariants = [...new Map(variants.filter((v) => v?.url && !isRejectedMediaUrl(v.url) && !isMediaSegment(v.url)).map((v) => [v.url, v])).values()];
+    let uniqueVariants = [
+      ...new Map(
+        variants
+          .filter((v) => v?.url && !isRejectedMediaUrl(v.url) && !isMediaSegment(v.url))
+          .map((v) => [v.url, v])
+      ).values()
+    ];
+
+    const contextAlive = !!(page?.context && !page.context().__vdClosed);
     const validationResults = await Promise.all(
       uniqueVariants.slice(0, 24).map(async (v) => {
-        const referer = v.referer || mediaReferers.get(v.url) || pageUrl;
-        const pageCheck = await ResultValidator.validateWithPage(v.url, page, referer);
-        const fallback = pageCheck.valid ? pageCheck : await ResultValidator.validate(v.url, referer);
-        return { variant: v, check: fallback };
+        const referer = mediaReferers.get(v.url) || pageUrl;
+        let check = { valid: false, reason: 'SKIPPED' };
+        if (contextAlive) check = await ResultValidator.validateWithPage(v.url, page, referer);
+        if (!check.valid) check = await ResultValidator.validate(v.url, referer);
+        return { variant: v, check, referer };
       })
     );
-    const checkByUrl = new Map(validationResults.map((x) => [x.variant.url, x.check]));
-    for (const v of uniqueVariants) v.validation = checkByUrl.get(v.url) || { valid: false, reason: 'NOT_CHECKED' };
-    uniqueVariants.sort((a, b) => Number(b.validation?.valid) - Number(a.validation?.valid) || rankScore(b.url) - rankScore(a.url));
+
+    const anyValid = validationResults.some((x) => x.check.valid);
+    const allowSoftRetry =
+      !anyValid &&
+      uniqueVariants.length &&
+      !diagnostics.timedOut &&
+      contextAlive &&
+      !diagnostics.captchaSuspected &&
+      !diagnostics.drmSuspected;
+    if (allowSoftRetry) {
+      diagnostics.softRetry = true;
+      try {
+        await page.waitForTimeout(1500);
+        diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
+        await page.waitForTimeout(1200);
+      } catch (e) {}
+      for (let i = 0; i < validationResults.length; i++) {
+        if (validationResults[i].check.valid) continue;
+        let again = await ResultValidator.validateWithPage(
+          validationResults[i].variant.url,
+          page,
+          validationResults[i].referer
+        );
+        if (!again.valid) {
+          again = await ResultValidator.validate(
+            validationResults[i].variant.url,
+            validationResults[i].referer
+          );
+        }
+        if (again.valid) validationResults[i].check = again;
+      }
+    }
+
+    for (const x of validationResults) {
+      x.variant.validation = x.check;
+      x.variant.referer = x.referer;
+      if (x.check.drmSuspected) diagnostics.drmSuspected = true;
+    }
+
+    uniqueVariants = uniqueVariants.sort(
+      (a, b) =>
+        Number(b.validation?.valid) - Number(a.validation?.valid) ||
+        rankScore(b.url, {
+          bandwidth: b.bandwidth,
+          validated: !!b.validation?.valid,
+          drmSuspected: !!b.drmSuspected
+        }) -
+          rankScore(a.url, {
+            bandwidth: a.bandwidth,
+            validated: !!a.validation?.valid,
+            drmSuspected: !!a.drmSuspected
+          })
+    );
     result.variants = uniqueVariants.slice(0, 20);
     result.subtitles = [...new Map(subtitles.filter((s) => s?.url).map((s) => [s.url, s])).values()].slice(0, 15);
     result.qualities = [...new Set(result.variants.map((v) => v.quality).filter(Boolean))];
+
     const validatedVariants = result.variants.filter((v) => v.validation?.valid);
     const picked = pickByQuality(validatedVariants.length ? validatedVariants : result.variants, quality);
-    if (picked && picked.url) {
+
+    if (picked && picked.url && picked.validation?.valid) {
       result.primaryUrl = picked.url;
       result.success = true;
       result.strategy = diagnostics.strategies.join('+') || 'partial';
       result.error = null;
       result.errorCode = null;
-      try {
-        result.linkMeta = extractLinkMeta(result.primaryUrl, picked.referer || mediaReferers.get(result.primaryUrl) || pageUrl);
-        const v = picked.validation || await ResultValidator.validateWithPage(result.primaryUrl, page, result.linkMeta.referer);
-        result.validated = !!v.valid;
-        if (!v.valid) result.validationReason = v.reason;
-      } catch (e) {
-        result.validated = false;
+      result.linkMeta = extractLinkMeta(result.primaryUrl, picked.referer || pageUrl);
+      result.validated = true;
+    } else if (picked && picked.url) {
+      result.primaryUrl = picked.url;
+      result.success = false;
+      result.linkMeta = extractLinkMeta(result.primaryUrl, picked.referer || pageUrl);
+      result.validated = false;
+      result.validationReason = picked.validation?.reason || 'UNVALIDATED';
+      if (diagnostics.drmSuspected || picked.validation?.reason === 'DRM_OR_ENCRYPTED_HLS') {
+        result.errorCode = 'DRM_PROTECTED';
+        result.error = 'Encrypted/DRM media detected; Widevine/FairPlay cannot be decrypted';
+      } else if (result.linkMeta?.likelySigned && (result.linkMeta.ttlSeconds === 0 || result.linkMeta.ttlSeconds < 30)) {
+        result.errorCode = 'TOKEN_EXPIRED_OR_SHORT_LIVED';
+        result.error = 'Signed media URL appears expired or extremely short-lived';
+      } else {
+        result.errorCode = 'STREAM_FOUND_BUT_UNPLAYABLE';
+        result.error = 'Candidates found but none passed playback validation';
       }
     } else if (!result.errorCode) {
-      result.error = diagnostics.captchaSuspected
-        ? 'Possible bot protection; no media streams observed'
-        : 'No video streams found';
-      result.errorCode = diagnostics.captchaSuspected ? 'BOT_PROTECTION_SUSPECTED' : 'NO_STREAM_FOUND';
+      if (diagnostics.captchaSuspected) {
+        result.errorCode = 'BOT_PROTECTION_SUSPECTED';
+        result.error = 'Possible CAPTCHA/bot protection; interactive challenges are not solved automatically';
+      } else if (diagnostics.drmSuspected) {
+        result.errorCode = 'DRM_PROTECTED';
+        result.error = 'Page appears to use DRM/encrypted media';
+      } else if (diagnostics.mseDetected) {
+        result.errorCode = 'CLOSED_PLAYER_OR_BLOB_ONLY';
+        result.error = 'Media pipeline detected (MSE) but no public stream URL was exposed';
+      } else {
+        result.errorCode = 'NO_STREAM_FOUND';
+        result.error = 'No video streams found';
+      }
     }
 
     try {
-      const c = await page.context().cookies();
-      if (c.length) await sessionManager.save(userId, c);
+      if (page.context && !page.context.__vdClosed) {
+        const c = await page.context().cookies();
+        if (c.length) await sessionManager.save(userId, c);
+      }
     } catch (e) {}
 
     result.duration = (Date.now() - started) / 1000;
@@ -1079,33 +1237,27 @@ class VideoExtractor {
       const add = (value) => {
         if (typeof value === 'string' && value.trim()) values.push(value.trim());
       };
-      document.querySelectorAll('iframe, video, audio, source, a, [data-src], [data-url], [data-href]').forEach((el) => {
-        ['src', 'href', 'data-src', 'data-url', 'data-href', 'data-play', 'data-player'].forEach((key) => add(el.getAttribute(key)));
+      document.querySelectorAll('iframe, video, audio, source, a, [data-src], [data-url]').forEach((el) => {
+        ['src', 'href', 'data-src', 'data-url', 'data-play'].forEach((key) => add(el.getAttribute(key)));
       });
       document.querySelectorAll('script').forEach((s) => add(s.textContent || ''));
       return values;
     });
     const out = new Set();
-    const add = (value) => {
-      if (!value || typeof value !== 'string') return;
-      const candidates = [value];
-      const decoded = value.replace(/\u002F/g, '/').replace(/\\\//g, '/');
-      if (decoded !== value) candidates.push(decoded);
-      for (const item of candidates) {
-        const matches = item.match(/https?:\/\/[^\s"'<>`\\]+/gi) || [];
-        for (const match of matches) {
-          try {
-            const u = new URLParser(match.replace(/[),;]+$/, ''));
-            if (!['http:', 'https:'].includes(u.protocol)) continue;
-            if (u.href === base.href) continue;
-            const path = (u.pathname + u.search).toLowerCase();
-            const likelyPlayer = /iframe|embed|player|play|watch|video|stream|source|file|download|m3u8|mp4|mpd/.test(path);
-            if (u.hostname !== base.hostname || likelyPlayer) out.add(u.href);
-          } catch (e) {}
-        }
+    for (const value of raw) {
+      if (!value) continue;
+      const matches = String(value).match(/https?:\/\/[^\s"'<>`\\]+/gi) || [];
+      for (const match of matches) {
+        try {
+          const u = new URLParser(match.replace(/[),;]+$/, ''));
+          if (!['http:', 'https:'].includes(u.protocol)) continue;
+          if (u.href === base.href) continue;
+          const path = (u.pathname + u.search).toLowerCase();
+          const likelyPlayer = /iframe|embed|player|play|watch|video|stream|m3u8|mp4|mpd/.test(path);
+          if (u.hostname !== base.hostname || likelyPlayer) out.add(u.href);
+        } catch (e) {}
       }
-    };
-    for (const value of raw) add(value);
+    }
     return [...out].slice(0, deep ? 12 : 6);
   }
 
@@ -1116,7 +1268,9 @@ class VideoExtractor {
       try {
         child = await context.newPage();
         child.on('request', (req) => {
-          try { if (looksLikeMedia(req.url())) this.add(bags, req.url()); } catch (e) {}
+          try {
+            if (looksLikeMedia(req.url())) this.add(bags, req.url());
+          } catch (e) {}
         });
         child.on('response', (res) => {
           try {
@@ -1134,75 +1288,20 @@ class VideoExtractor {
           document.querySelectorAll('video, audio, source').forEach((el) => {
             if (el.currentSrc) out.push(el.currentSrc);
             if (el.src) out.push(el.src);
-            if (el.getAttribute('data-src')) out.push(el.getAttribute('data-src'));
           });
           (window.__vdCaptured || []).forEach((x) => out.push(x.url));
           return out;
         });
         media.forEach((u) => this.add(bags, u));
-        diagnostics.framesVisited += child.frames().length;
         const found = this.toObj(bags, candidate);
         if (found.m3u8.length || found.mp4.length || found.mpd.length || found.webm.length) break;
       } catch (e) {
         diagnostics.embeddedErrors = (diagnostics.embeddedErrors || 0) + 1;
       } finally {
-        try { await child?.close(); } catch (e) {}
+        try {
+          await child?.close();
+        } catch (e) {}
       }
-    }
-  }
-}
-
-class ResultValidator {
-  static inspect(url, status, contentType, body = '') {
-    if (status < 200 || status >= 400) return { valid: false, reason: 'INVALID_STATUS', status, contentType };
-    if (/\.m3u8(?:\?|#|$)/i.test(url) && !String(body || '').includes('#EXTM3U')) {
-      return { valid: false, reason: 'INVALID_M3U8', status, contentType };
-    }
-    if (/\.mpd(?:\?|#|$)/i.test(url) && !/<MPD[\s>]/i.test(String(body || ''))) {
-      return { valid: false, reason: 'INVALID_MPD', status, contentType };
-    }
-    return { valid: true, reason: null, status, contentType };
-  }
-
-  static async validateWithPage(url, page, referer = null) {
-    if (!page?.context) return { valid: false, reason: 'NO_PAGE_CONTEXT' };
-    try {
-      const response = await page.context().request.get(url, {
-        timeout: 7000,
-        failOnStatusCode: false,
-        maxRedirects: 4,
-        headers: { Accept: '*/*', ...(referer ? { Referer: referer } : {}) }
-      });
-      const contentType = response.headers()['content-type'] || '';
-      const body = /m3u8|mpd|manifest|playlist/i.test(url) ? await response.text().catch(() => '') : '';
-      return this.inspect(url, response.status(), contentType, body);
-    } catch (e) {
-      return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
-    }
-  }
-
-  static async validate(url, referer = null) {
-    if (!url) return { valid: false, reason: 'NO_URL' };
-    try {
-      new URLParser(url);
-    } catch (e) {
-      return { valid: false, reason: 'INVALID_URL' };
-    }
-    try {
-      const res = await axios.get(url, {
-        timeout: 10000,
-        maxRedirects: 3,
-        maxContentLength: 250000,
-        validateStatus: () => true,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Range: 'bytes=0-8192',
-          ...(referer ? { Referer: referer, Origin: new URLParser(referer).origin } : {})
-        }
-      });
-      return this.inspect(url, res.status, res.headers?.['content-type'] || '', res.data || '');
-    } catch (e) {
-      return { valid: false, reason: 'VALIDATION_FAILED' };
     }
   }
 }
@@ -1211,8 +1310,11 @@ class SearchProvider {
   isInfoCandidate(url = '', source = '') {
     const u = String(url || '').toLowerCase();
     const s = String(source || '').toLowerCase();
-    return /wikipedia\.org|imdb\.com|themoviedb\.org|rottentomatoes\.com|fandom\.com|facebook\.com|instagram\.com|youtube\.com/.test(u) ||
-      /wikipedia|tmdb|imdb|omdb/.test(s) || /\/wiki\/|\/search(?:\/|\?|$)|\/person\//.test(u);
+    return (
+      /wikipedia\.org|imdb\.com|themoviedb\.org|rottentomatoes\.com|fandom\.com|facebook\.com|instagram\.com/.test(u) ||
+      /wikipedia|tmdb|imdb|omdb/.test(s) ||
+      /\/wiki\/|\/person\//.test(u)
+    );
   }
 
   add(map, item) {
@@ -1223,11 +1325,15 @@ class SearchProvider {
     const rawScore =
       (item.score != null ? item.score : titleSimilarity(item.query || '', item.title || item.name || '')) +
       (item.boost || 0);
-    const descriptor = `${url} ${item.title || ''} ${item.name || ''}`.toLowerCase();
-    const watchBoost = /watch|stream|online|episode|season|movie|series|film|play|embed|player|video/.test(descriptor) ? 0.12 : 0;
-    const informationPenalty = /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram|youtube/.test(descriptor) ? 0.2 : 0;
+    const descriptor = url + ' ' + (item.title || '') + ' ' + (item.name || '');
+    const d = descriptor.toLowerCase();
+    const watchBoost = /watch|stream|online|episode|season|movie|series|film|play|embed|player|video/.test(d)
+      ? 0.15
+      : 0;
+    const informationPenalty =
+      /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram/.test(d) ? 0.25 : 0;
     const score = Math.max(0, rawScore + watchBoost - informationPenalty);
-    const candidateClass = infoCandidate ? 'info' : (watchBoost > 0 ? 'watch' : 'unknown');
+    const candidateClass = infoCandidate ? 'info' : watchBoost > 0 ? 'watch' : 'unknown';
     const prev = map.get(url);
     if (!prev || score > prev.score) {
       map.set(url, {
@@ -1261,7 +1367,7 @@ class SearchProvider {
           url: data.AbstractURL,
           source: 'ddg-api',
           query,
-          boost: 0.15,
+          boost: 0.12,
           overview: data.Abstract || null
         });
       }
@@ -1301,7 +1407,7 @@ class SearchProvider {
           url: urls[i],
           source: 'wikipedia',
           query,
-          boost: 0.12
+          boost: 0.08
         });
       }
     } catch (e) {}
@@ -1334,7 +1440,7 @@ class SearchProvider {
           tmdbId: item.id,
           poster,
           query,
-          boost: 0.22
+          boost: 0.18
         });
       }
     } catch (e) {
@@ -1352,18 +1458,17 @@ class SearchProvider {
       if (data && data.Response === 'False') return;
       for (const item of (data && data.Search) || []) {
         if (!item.imdbID) continue;
-        const imdbUrl = 'https://www.imdb.com/title/' + item.imdbID + '/';
         this.add(map, {
           name: item.Year ? item.Title + ' (' + item.Year + ')' : item.Title,
           title: item.Title,
-          url: imdbUrl,
+          url: 'https://www.imdb.com/title/' + item.imdbID + '/',
           source: 'imdb-omdb',
           type: String(item.Type || 'movie').toLowerCase(),
           year: item.Year || null,
           imdbId: item.imdbID,
           poster: item.Poster && item.Poster !== 'N/A' ? item.Poster : null,
           query,
-          boost: 0.2
+          boost: 0.16
         });
       }
     } catch (e) {
@@ -1375,7 +1480,7 @@ class SearchProvider {
     const q = String(query || '').trim();
     if (!q) return [];
     const map = new Map();
-    const watchQuery = `"${q}" watch OR stream OR episode`;
+    const watchQuery = '"' + q + '" (watch OR stream OR episode OR "full movie")';
     await Promise.all([
       this.searchDuckDuckGoAPI(q, map),
       this.searchDuckDuckGoAPI(watchQuery, map),
@@ -1460,9 +1565,7 @@ class SingleFlight {
 }
 const singleFlight = new SingleFlight();
 
-const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
-
-const extractionQueue = new Queue('vd-pro-v41', REDIS_URL, {
+const extractionQueue = new Queue('vd-pro-v42', REDIS_URL, {
   settings: {
     stalledInterval: 20000,
     maxStalledCount: 1,
@@ -1512,15 +1615,29 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
+function rateLimitKey(req) {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (token) {
+      const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
+      if (decoded?.apiKey) return 'u:' + decoded.apiKey;
+    }
+  } catch (e) {}
+  const id = req.user?._id?.toString?.() || req.user?._id;
+  if (id) return 'u:' + id;
+  return 'ip:' + (req.ip || 'unknown');
+}
+
 app.use(
   '/api/v1/',
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
-    keyGenerator: (req) => {
-      const id = req.user?._id?.toString?.() || req.user?._id;
-      return id ? 'u:' + id : 'ip:' + req.ip;
-    }
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.path === '/health' || req.path === '/api/v1/health',
+    keyGenerator: rateLimitKey
   })
 );
 
@@ -1528,15 +1645,24 @@ app.get('/api/v1/health', (req, res) => {
   res.json({
     status: 'healthy',
     name: 'Vd-Pro',
-    version: '4.1.0',
+    version: '4.2.1',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
-    limits: { hardExtractMs: HARD_EXTRACT_MS, navTimeoutMs: NAV_TIMEOUT_MS },
+    limits: {
+      hardExtractMs: HARD_EXTRACT_MS,
+      navTimeoutMs: NAV_TIMEOUT_MS,
+      jobProcessTimeoutMs: JOB_PROCESS_TIMEOUT_MS
+    },
     searchProviders: {
       ddgApi: true,
       wikipedia: true,
       tmdb: !!TMDB_API_KEY,
       omdbImdb: !!OMDB_API_KEY
+    },
+    notes: {
+      drm: 'Detected and reported; not decrypted',
+      captcha: 'Detected and reported; not solved',
+      signedUrls: 'TTL/referer via linkMeta when possible'
     },
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
@@ -1652,7 +1778,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.1.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.2.1' } })
 );
 
 async function processExtractionJob(job) {
@@ -1667,10 +1793,15 @@ async function processExtractionJob(job) {
         HARD_SEARCH_MS,
         'SEARCH_TIMEOUT'
       );
+      const sp = new SearchProvider();
+      const watchCandidates = results.filter((r) => !sp.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info');
+      const infoCandidates = results.filter((r) => sp.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info');
       return {
         success: results.length > 0,
         query: job.data.search,
         results,
+        watchCandidates,
+        infoCandidates,
         count: results.length,
         providers: ['ddg-api', 'wikipedia', TMDB_API_KEY ? 'tmdb' : null, OMDB_API_KEY ? 'omdb-imdb' : null].filter(
           Boolean
@@ -1692,8 +1823,12 @@ async function processExtractionJob(job) {
         return { success: false, query: job.data.search, results: [], errorCode: 'NO_SEARCH_RESULTS' };
       }
       const searchProvider = new SearchProvider();
-      const infoCandidates = results.filter((r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info');
-      const watchCandidates = results.filter((r) => !searchProvider.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info');
+      const infoCandidates = results.filter(
+        (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
+      );
+      const watchCandidates = results.filter(
+        (r) => !searchProvider.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info'
+      );
       const preferred = watchCandidates[0];
       if (!preferred) {
         return {
@@ -1702,7 +1837,8 @@ async function processExtractionJob(job) {
           watchCandidates: [],
           infoCandidates,
           searchResults: results.slice(0, 10),
-          errorCode: 'NO_WATCH_CANDIDATE'
+          errorCode: 'NO_WATCH_CANDIDATE',
+          error: 'Only informational pages found; no watch candidate to extract'
         };
       }
       const extraction = await new VideoExtractor().extract(preferred.url, page, userId, {
@@ -1731,7 +1867,11 @@ async function processExtractionJob(job) {
     if (result.success) {
       metrics.sourceSuccess.inc();
       proxyManager.success(proxy);
-      await cacheManager.set(job.data.url, result, job.data.quality || 'auto', !!job.data.deep);
+      const ttl = result.linkMeta?.ttlSeconds;
+      const tooShortLived = result.linkMeta?.likelySigned && typeof ttl === 'number' && ttl > 0 && ttl < 120;
+      if (!tooShortLived) {
+        await cacheManager.set(job.data.url, result, job.data.quality || 'auto', !!job.data.deep);
+      }
       if (db) {
         try {
           await db.collection('extractions').updateOne(
@@ -1760,12 +1900,7 @@ async function processExtractionJob(job) {
     logger.error({ jobId: job.id, error: error.message }, 'Job failed');
     proxyManager.fail(proxy);
     const code = error.code || (error.message === 'EXTRACTION_TIMEOUT' ? 'EXTRACTION_TIMEOUT' : 'JOB_EXCEPTION');
-    return {
-      success: false,
-      error: error.message,
-      errorCode: code,
-      duration: 0
-    };
+    return { success: false, error: error.message, errorCode: code, duration: 0 };
   } finally {
     if (ctx) browserPool.release(ctx);
   }
@@ -1784,8 +1919,7 @@ extractionQueue.process(2, async (job) => {
     };
   }
 });
-const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
-const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
+
 const watchdogTimer = setInterval(async () => {
   try {
     const activeJobs = await extractionQueue.getJobs(['active'], 0, 100);
@@ -1804,7 +1938,7 @@ const watchdogTimer = setInterval(async () => {
     logger.warn({ error: e.message }, 'Watchdog scan failed');
   }
 }, WATCHDOG_INTERVAL_MS);
-watchdogTimer.unref?.();
+if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref();
 
 const wss = new WebSocketServer({ server: httpServer });
 wss.on('connection', async (ws, req) => {
@@ -1859,23 +1993,13 @@ process.on('SIGINT', shutdown);
 
 (async () => {
   try {
-    logger.info('🚀 Vd-Pro v4.1 starting...');
+    logger.info('Vd-Pro v4.2.1 starting...');
     await connectDatabase();
     browserPool = new BrowserPool(2);
     await browserPool.init();
     httpServer.listen(PORT, '0.0.0.0', () => {
-      logger.info('Vd-Pro v4.1 on :' + PORT);
-      console.log(`
-╔══════════════════════════════════════════════════════════╗
-║  VD-PRO v4.1 STABLE                                      ║
-║  ✓ Hard timeout — no stuck active jobs                   ║
-║  ✓ Always returns result object                          ║
-║  ✓ m3u8 / mp4 / webm / mpd + multi-quality               ║
-║  ✓ Subtitles when found                                  ║
-║  ✓ Search: DDG + Wikipedia + TMDB + OMDb/IMDb            ║
-║  HARD_EXTRACT_MS=${HARD_EXTRACT_MS}                                        ║
-╚══════════════════════════════════════════════════════════╝
-`);
+      logger.info('Vd-Pro v4.2.1 on :' + PORT);
+      console.log('VD-PRO v4.2.1 HARDENED — same API — DRM/CAPTCHA reported only — timeouts+watchdog');
     });
   } catch (e) {
     logger.error({ error: e.message }, 'Startup failed');
