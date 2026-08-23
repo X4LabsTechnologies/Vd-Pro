@@ -1,13 +1,15 @@
 /**
- * Vd-Pro v4.2.1 — Hardened production extractor (same API)
+ * Vd-Pro v4.3.0 — Stronger generic extraction (same API)
  *
- * Honest limits (not bugs to "fix"):
- * - DRM / Widevine: detected & reported, NOT decrypted
- * - Interactive CAPTCHA: detected & reported, NOT solved
- * - Short-lived signed URLs: linkMeta + soft revalidate
- * - Closed players: clearer CLOSED_PLAYER_OR_BLOB_ONLY code
+ * Improvements vs 4.2.1:
+ * - Reject junk/placeholder/ad autoplay MP4s (false-positive success)
+ * - Prefer real HLS (m3u8) over tiny progressive MP4
+ * - Min size check for progressive MP4 validation
+ * - Read common player configs (JW/Video.js/Clappr/Plyr-style globals)
+ * - Click server/quality tabs when present (generic selectors)
+ * - Stronger iframe/embed follow-up
  *
- * Same API: /health /auth/register /extract /search /jobs /proxy-status
+ * Limits unchanged: no DRM decrypt, no CAPTCHA solve
  */
 
 import express from 'express';
@@ -220,6 +222,16 @@ function isRejectedMediaUrl(url = '') {
   );
 }
 
+/** Placeholder / test / ad autoplay clips that must never count as success */
+function isJunkMediaUrl(url = '') {
+  const u = String(url || '').toLowerCase();
+  if (!u) return true;
+  if (isRejectedMediaUrl(u)) return true;
+  return /canautoplayinline|autoplay.?test|blank\.mp4|dummy\.mp4|sample\.mp4|test\.mp4|placeholder|1x1\.|pixel\.|spacer\.|transparent\.|ads?[-_]?video|preroll|midroll|postroll|ima_sdk|vast\.|googlevideo\.com\/videoplayback\?.*ad|mmcdn\.com\/videos\/can|chaturbate\.com|stripchat|livejasmin/i.test(
+    u
+  );
+}
+
 function isMediaSegment(url = '') {
   return /\.(m4s|ts)(?:\?|#|$)/i.test(String(url || '')) || /\/(?:segment|chunk|fragments?)(?:\/|\?|$)/i.test(String(url || ''));
 }
@@ -227,7 +239,7 @@ function isMediaSegment(url = '') {
 function looksLikeMedia(url = '', ct = '') {
   const u = String(url || '').toLowerCase();
   const c = String(ct || '').toLowerCase();
-  if (isRejectedMediaUrl(u)) return false;
+  if (isRejectedMediaUrl(u) || isJunkMediaUrl(u)) return false;
   if (/\.(m3u8|mp4|webm|mpd|m4v|mov|mkv)(\?|#|$)/i.test(u)) return true;
   if (/\.(m4s|ts)(\?|#|$)/i.test(u)) return true;
   if (/\/hls\/|\/dash\/|\/manifest(?:\/|\?|$)|playlist|master\.json|videoplayback/i.test(u)) return true;
@@ -284,17 +296,20 @@ function extractLinkMeta(url, referer = null) {
 function rankScore(url, extra = {}) {
   const u = String(url || '').toLowerCase();
   let s = 0;
-  if (u.includes('.mp4')) s += 55;
-  if (u.includes('.m3u8')) s += 48;
-  if (u.includes('.mpd')) s += 40;
-  if (/master|playlist|index\.m3u8/i.test(u)) s += 8;
+  // Prefer adaptive streams over random progressive files
+  if (u.includes('.m3u8')) s += 70;
+  if (u.includes('.mpd')) s += 62;
+  if (u.includes('.mp4')) s += 40;
+  if (/master|playlist|index\.m3u8/i.test(u)) s += 12;
   if (/2160|4k/.test(u)) s += 30;
   if (/1080|1920/.test(u)) s += 22;
   if (/720/.test(u)) s += 14;
   if (/480|360/.test(u)) s += 4;
   if (extra.bandwidth) s += Math.min(12, Math.floor(Number(extra.bandwidth) / 2_000_000));
   if (extra.validated) s += 20;
+  if (extra.contentLength && extra.contentLength > 1_000_000) s += 10;
   if (extra.drmSuspected) s -= 60;
+  if (isJunkMediaUrl(u)) s -= 200;
   if (/preview|trailer|thumb|poster|sample/.test(u)) s -= 25;
   if (isMediaSegment(u)) s -= 40;
   if (u.startsWith('blob:')) s -= 50;
@@ -694,8 +709,104 @@ async function tryClickPlay(page) {
   return clicked;
 }
 
+/** Generic: server / quality / source tabs on multi-host player pages */
+async function tryClickPlayerTabs(page) {
+  const tabSelectors = [
+    '[class*="server" i] button',
+    '[class*="servers" i] a',
+    '[class*="servers" i] li',
+    '[class*="quality" i] button',
+    '[class*="source" i] a',
+    'a[href*="server"]',
+    'button[data-server]',
+    '[data-embed]',
+    '.watching a',
+    '.episode-server a'
+  ];
+  let n = 0;
+  for (const frame of page.frames().slice(0, 6)) {
+    for (const sel of tabSelectors) {
+      try {
+        const els = await frame.$$(sel);
+        for (const el of els.slice(0, 4)) {
+          await el.click({ timeout: 600 }).catch(() => {});
+          n++;
+          await page.waitForTimeout(400).catch(() => {});
+        }
+      } catch (e) {}
+    }
+  }
+  return n;
+}
+
+/** Pull URLs from common player globals without site-specific hacks */
+async function scrapePlayerConfigs(page) {
+  try {
+    return await page.evaluate(() => {
+      const out = [];
+      const push = (u) => {
+        if (typeof u === 'string' && u && out.indexOf(u) === -1) out.push(u);
+      };
+      const walk = (obj, depth) => {
+        if (!obj || depth > 5) return;
+        if (typeof obj === 'string') {
+          if (/\.(m3u8|mp4|mpd|webm|vtt|srt)(\?|#|$)/i.test(obj) || /\/hls\/|\/manifest/i.test(obj)) push(obj);
+          return;
+        }
+        if (Array.isArray(obj)) {
+          obj.slice(0, 40).forEach((x) => walk(x, depth + 1));
+          return;
+        }
+        if (typeof obj === 'object') {
+          const keys = Object.keys(obj).slice(0, 60);
+          for (const k of keys) {
+            if (/file|src|source|sources|hls|dash|playlist|stream|url|video|fileUrl|playback/i.test(k)) {
+              walk(obj[k], depth + 1);
+            }
+          }
+        }
+      };
+      try {
+        if (window.jwplayer) {
+          const ids = document.querySelectorAll('[id]');
+          ids.forEach((el) => {
+            try {
+              const p = window.jwplayer(el.id);
+              if (p && p.getPlaylist) walk(p.getPlaylist(), 0);
+              if (p && p.getConfig) walk(p.getConfig(), 0);
+            } catch (e) {}
+          });
+        }
+      } catch (e) {}
+      try {
+        if (window.videojs) {
+          document.querySelectorAll('video, .video-js').forEach((el) => {
+            try {
+              const p = window.videojs.getPlayer ? window.videojs.getPlayer(el) : null;
+              if (p && p.currentSource) walk(p.currentSource(), 0);
+              if (p && p.currentSources) walk(p.currentSources(), 0);
+            } catch (e) {}
+          });
+        }
+      } catch (e) {}
+      try {
+        if (window.Clappr && window.Clappr.Player) walk(window.player, 0);
+      } catch (e) {}
+      try {
+        [window.__INITIAL_STATE__, window.__NEXT_DATA__, window.playerConfig, window.config, window.videoConfig].forEach(
+          (x) => walk(x, 0)
+        );
+      } catch (e) {}
+      return out;
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
 class ResultValidator {
-  static inspect(url, status, contentType, body = '') {
+  static inspect(url, status, contentType, body = '', contentLength = null) {
+    if (isJunkMediaUrl(url)) return { valid: false, reason: 'JUNK_OR_PLACEHOLDER', status, contentType };
     if (status < 200 || status >= 400) return { valid: false, reason: 'INVALID_STATUS', status, contentType };
     if (/\.m3u8(?:\?|#|$)/i.test(url) && !String(body || '').includes('#EXTM3U')) {
       return { valid: false, reason: 'INVALID_M3U8', status, contentType };
@@ -706,7 +817,12 @@ class ResultValidator {
     if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(String(body || ''))) {
       return { valid: false, reason: 'DRM_OR_ENCRYPTED_HLS', status, contentType, drmSuspected: true };
     }
-    return { valid: true, reason: null, status, contentType };
+    // Progressive MP4 under ~80KB is almost always a stub/ad clip
+    const len = contentLength != null ? Number(contentLength) : null;
+    if (/\.mp4(?:\?|#|$)/i.test(url) && Number.isFinite(len) && len > 0 && len < 80_000) {
+      return { valid: false, reason: 'TOO_SMALL_MP4', status, contentType, contentLength: len };
+    }
+    return { valid: true, reason: null, status, contentType, contentLength: len };
   }
 
   static async validateWithPage(url, page, referer = null) {
@@ -718,9 +834,11 @@ class ResultValidator {
         maxRedirects: 4,
         headers: { Accept: '*/*', ...(referer ? { Referer: referer } : {}) }
       });
-      const contentType = response.headers()['content-type'] || '';
+      const headers = response.headers() || {};
+      const contentType = headers['content-type'] || '';
+      const cl = headers['content-length'] ? parseInt(headers['content-length'], 10) : null;
       const body = /m3u8|mpd|manifest|playlist/i.test(url) ? await response.text().catch(() => '') : '';
-      return this.inspect(url, response.status(), contentType, body);
+      return this.inspect(url, response.status(), contentType, body, cl);
     } catch (e) {
       return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
     }
@@ -728,6 +846,7 @@ class ResultValidator {
 
   static async validate(url, referer = null) {
     if (!url) return { valid: false, reason: 'NO_URL' };
+    if (isJunkMediaUrl(url)) return { valid: false, reason: 'JUNK_OR_PLACEHOLDER' };
     try {
       new URLParser(url);
     } catch (e) {
@@ -752,7 +871,13 @@ class ResultValidator {
         validateStatus: () => true,
         headers
       });
-      return this.inspect(url, res.status, res.headers?.['content-type'] || '', res.data || '');
+      const clHeader = res.headers?.['content-length'] || res.headers?.['content-range'];
+      let cl = null;
+      if (clHeader) {
+        const m = /\/(\d+)/.exec(String(clHeader)) || /^(\d+)$/.exec(String(clHeader));
+        if (m) cl = parseInt(m[1], 10);
+      }
+      return this.inspect(url, res.status, res.headers?.['content-type'] || '', res.data || '', cl);
     } catch (e) {
       return { valid: false, reason: 'VALIDATION_FAILED' };
     }
@@ -778,7 +903,7 @@ class VideoExtractor {
 
   add(bags, url, ct = '') {
     if (!url || typeof url !== 'string') return;
-    if (url.startsWith('blob:') || isRejectedMediaUrl(url)) return;
+    if (url.startsWith('blob:') || isRejectedMediaUrl(url) || isJunkMediaUrl(url)) return;
     if (looksLikeSubtitle(url, ct)) {
       bags.subtitles.add(url);
       return;
@@ -961,12 +1086,25 @@ class VideoExtractor {
       } catch (e) {}
 
       diagnostics.playClicked = await tryClickPlay(page);
+      try {
+        diagnostics.tabsClicked = await tryClickPlayerTabs(page);
+        if (diagnostics.tabsClicked) {
+          await tryClickPlay(page);
+          await page.waitForTimeout(deep ? 2000 : 1000);
+        }
+      } catch (e) {}
       await page.waitForTimeout(deep ? 4500 : 2500);
       diagnostics.strategies.push('network');
 
       try {
         this.mineHtml(await page.content(), bags, pageUrl);
         diagnostics.strategies.push('dom');
+      } catch (e) {}
+
+      try {
+        const fromPlayers = await scrapePlayerConfigs(page);
+        fromPlayers.forEach((u) => this.add(bags, u));
+        if (fromPlayers.length) diagnostics.strategies.push('player-config');
       } catch (e) {}
 
       try {
@@ -1102,7 +1240,13 @@ class VideoExtractor {
     let uniqueVariants = [
       ...new Map(
         variants
-          .filter((v) => v?.url && !isRejectedMediaUrl(v.url) && !isMediaSegment(v.url))
+          .filter(
+            (v) =>
+              v?.url &&
+              !isRejectedMediaUrl(v.url) &&
+              !isJunkMediaUrl(v.url) &&
+              !isMediaSegment(v.url)
+          )
           .map((v) => [v.url, v])
       ).values()
     ];
@@ -1565,7 +1709,7 @@ class SingleFlight {
 }
 const singleFlight = new SingleFlight();
 
-const extractionQueue = new Queue('vd-pro-v42', REDIS_URL, {
+const extractionQueue = new Queue('vd-pro-v43', REDIS_URL, {
   settings: {
     stalledInterval: 20000,
     maxStalledCount: 1,
@@ -1645,7 +1789,7 @@ app.get('/api/v1/health', (req, res) => {
   res.json({
     status: 'healthy',
     name: 'Vd-Pro',
-    version: '4.2.1',
+    version: '4.3.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -1778,7 +1922,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.2.1' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.3.0' } })
 );
 
 async function processExtractionJob(job) {
@@ -1993,13 +2137,13 @@ process.on('SIGINT', shutdown);
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.2.1 starting...');
+    logger.info('Vd-Pro v4.3.0 starting...');
     await connectDatabase();
     browserPool = new BrowserPool(2);
     await browserPool.init();
     httpServer.listen(PORT, '0.0.0.0', () => {
-      logger.info('Vd-Pro v4.2.1 on :' + PORT);
-      console.log('VD-PRO v4.2.1 HARDENED — same API — DRM/CAPTCHA reported only — timeouts+watchdog');
+      logger.info('Vd-Pro v4.3.0 on :' + PORT);
+      console.log('VD-PRO v4.3.0 — junk filter + player config + server tabs — same API');
     });
   } catch (e) {
     logger.error({ error: e.message }, 'Startup failed');
