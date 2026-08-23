@@ -1,15 +1,14 @@
 /**
- * Vd-Pro v4.3.0 — Stronger generic extraction (same API)
+ * Vd-Pro v4.4.0 — Extraction engine upgrade (same public API)
  *
- * Improvements vs 4.2.1:
- * - Reject junk/placeholder/ad autoplay MP4s (false-positive success)
- * - Prefer real HLS (m3u8) over tiny progressive MP4
- * - Min size check for progressive MP4 validation
- * - Read common player configs (JW/Video.js/Clappr/Plyr-style globals)
- * - Click server/quality tabs when present (generic selectors)
- * - Stronger iframe/embed follow-up
- *
- * Limits unchanged: no DRM decrypt, no CAPTCHA solve
+ * Extraction-only improvements:
+ * - Multi-round play + force HTML5 video.play()
+ * - waitForResponse for m3u8/mpd/mp4 while interacting
+ * - Generic watch/server/episode tab clicks (any language labels)
+ * - Deeper iframe harvest + lazy iframe activation
+ * - Base64 / escaped URL recovery from scripts
+ * - Second harvest after interaction window
+ * - Same endpoints, same result shape, no DRM/CAPTCHA bypass
  */
 
 import express from 'express';
@@ -691,52 +690,140 @@ async function tryClickPlay(page) {
     '.vjs-big-play-button',
     '.plyr__control--overlaid',
     '.jw-icon-display',
+    '.jw-display-icon-container',
     'button.play',
     '[class*="play-button" i]',
+    '[class*="playbtn" i]',
+    '[class*="btn-play" i]',
+    'div[class*="play"][role="button"]',
     'video'
   ];
   let clicked = false;
-  for (const frame of page.frames().slice(0, 8)) {
+  for (const frame of page.frames().slice(0, 12)) {
     for (const sel of selectors) {
       try {
-        const el = await frame.$(sel);
-        if (!el) continue;
-        await el.click({ timeout: 800 }).catch(() => {});
-        clicked = true;
+        const els = await frame.$$(sel);
+        for (const el of els.slice(0, 3)) {
+          await el.click({ timeout: 700 }).catch(() => {});
+          clicked = true;
+        }
       } catch (e) {}
     }
   }
   return clicked;
 }
 
-/** Generic: server / quality / source tabs on multi-host player pages */
+async function forceHtml5Play(page) {
+  try {
+    return await page.evaluate(() => {
+      let n = 0;
+      document.querySelectorAll('video').forEach((v) => {
+        try {
+          v.muted = true;
+          const p = v.play();
+          if (p && p.catch) p.catch(() => {});
+          n++;
+        } catch (e) {}
+      });
+      return n;
+    });
+  } catch (e) {
+    return 0;
+  }
+}
+
+/** Generic: server / quality / watch / episode controls on multi-source pages */
 async function tryClickPlayerTabs(page) {
   const tabSelectors = [
     '[class*="server" i] button',
     '[class*="servers" i] a',
     '[class*="servers" i] li',
+    '[class*="servers" i] span',
     '[class*="quality" i] button',
     '[class*="source" i] a',
+    '[class*="player" i] a[href*="http"]',
     'a[href*="server"]',
     'button[data-server]',
+    'button[data-embed]',
     '[data-embed]',
+    '[data-link]',
+    '[data-url*="http"]',
     '.watching a',
-    '.episode-server a'
+    '.episode-server a',
+    '#watch a',
+    '#player-option a',
+    '.player-options a',
+    '.nav-pills a',
+    '[role="tab"]'
   ];
   let n = 0;
-  for (const frame of page.frames().slice(0, 6)) {
+  for (const frame of page.frames().slice(0, 8)) {
     for (const sel of tabSelectors) {
       try {
         const els = await frame.$$(sel);
-        for (const el of els.slice(0, 4)) {
-          await el.click({ timeout: 600 }).catch(() => {});
-          n++;
-          await page.waitForTimeout(400).catch(() => {});
+        for (const el of els.slice(0, 5)) {
+          try {
+            const box = await el.boundingBox();
+            if (box && box.width > 0 && box.height > 0) {
+              await el.click({ timeout: 600 }).catch(() => {});
+              n++;
+              await page.waitForTimeout(350).catch(() => {});
+            }
+          } catch (e) {}
         }
       } catch (e) {}
     }
   }
+  // Text-match generic watch/play labels (Latin + common Arabic UI words)
+  try {
+    n += await page.evaluate(() => {
+      let c = 0;
+      const re = /watch|play|server|source|load|stream|مشاهدة|تشغيل|سيرفر|الجودة|تحميل/i;
+      const nodes = document.querySelectorAll('a, button, li, span, div[role="button"]');
+      for (const el of nodes) {
+        if (c >= 8) break;
+        const t = (el.innerText || el.textContent || '').trim();
+        if (t.length > 0 && t.length < 40 && re.test(t)) {
+          try {
+            el.click();
+            c++;
+          } catch (e) {}
+        }
+      }
+      return c;
+    });
+  } catch (e) {}
   return n;
+}
+
+async function activateLazyIframes(page) {
+  try {
+    return await page.evaluate(() => {
+      let n = 0;
+      document.querySelectorAll('iframe').forEach((f) => {
+        const ds = f.getAttribute('data-src') || f.getAttribute('data-lazy-src') || f.getAttribute('data-url');
+        if (ds && (!f.src || f.src === 'about:blank')) {
+          try {
+            f.src = ds;
+            n++;
+          } catch (e) {}
+        }
+      });
+      return n;
+    });
+  } catch (e) {
+    return 0;
+  }
+}
+
+function mediaResponsePredicate(res) {
+  try {
+    const u = res.url();
+    if (!u || isRejectedMediaUrl(u) || isJunkMediaUrl(u)) return false;
+    return /\.m3u8(?:\?|#|$)/i.test(u) || /\.mpd(?:\?|#|$)/i.test(u) || /\.mp4(?:\?|#|$)/i.test(u) || /\/manifest/i.test(u);
+  } catch (e) {
+    return false;
+  }
 }
 
 /** Pull URLs from common player globals without site-specific hacks */
@@ -957,11 +1044,22 @@ class VideoExtractor {
     }
     for (const candidate of extractUrlCandidates(html, base)) this.add(bags, candidate);
     const cfg =
-      /"(?:file|src|source|sources|hls|dash|playlist|stream|videoUrl|mediaUrl|playbackUrl)"\s*:\s*"([^"]+)"/gi;
+      /"(?:file|src|source|sources|hls|dash|playlist|stream|videoUrl|mediaUrl|playbackUrl|file_url|stream_url)"\s*:\s*"([^"]+)"/gi;
     let cm;
     while ((cm = cfg.exec(html)) !== null) {
       const u = cm[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
       this.add(bags, resolveUrl(base, u) || u);
+    }
+    // Base64 payloads that decode to URLs (common in obfuscated players)
+    const b64re = /(?:atob\s*\(\s*["']|["'])([A-Za-z0-9+/=]{40,})["']/g;
+    let bm;
+    while ((bm = b64re.exec(html)) !== null) {
+      try {
+        const decoded = Buffer.from(bm[1], 'base64').toString('utf8');
+        if (/https?:\/\//i.test(decoded) || /\.m3u8|\.mp4|\.mpd/i.test(decoded)) {
+          for (const candidate of extractUrlCandidates(decoded, base)) this.add(bags, candidate);
+        }
+      } catch (e) {}
     }
   }
 
@@ -1051,6 +1149,75 @@ class VideoExtractor {
     page.on('response', onResponse);
     page.context().on('page', onContextPage);
 
+    const harvestDomAndHooks = async (label) => {
+      try {
+        this.mineHtml(await page.content(), bags, pageUrl);
+        diagnostics.strategies.push(label + '-dom');
+      } catch (e) {}
+      try {
+        const fromPlayers = await scrapePlayerConfigs(page);
+        fromPlayers.forEach((u) => this.add(bags, u));
+        if (fromPlayers.length) diagnostics.strategies.push(label + '-player-config');
+      } catch (e) {}
+      try {
+        const mediaUrls = await page.evaluate(() => {
+          const out = [];
+          document.querySelectorAll('video, audio, source, track').forEach((v) => {
+            if (v.currentSrc) out.push(v.currentSrc);
+            if (v.src) out.push(v.src);
+            if (v.getAttribute) {
+              const ds = v.getAttribute('data-src');
+              if (ds) out.push(ds);
+            }
+          });
+          try {
+            performance.getEntriesByType('resource').forEach((entry) => out.push(entry.name));
+          } catch (e) {}
+          (window.__vdCaptured || []).forEach((x) => out.push(x.url));
+          return out;
+        });
+        mediaUrls.forEach((u) => this.add(bags, u));
+        const signals = await page.evaluate(() => ({
+          mse: !!(window.__vdSignals && window.__vdSignals.mse),
+          eme: !!(window.__vdSignals && window.__vdSignals.eme)
+        }));
+        diagnostics.mseDetected = diagnostics.mseDetected || !!signals.mse;
+        if (signals.eme) diagnostics.drmSuspected = true;
+        diagnostics.strategies.push(label + '-hooks');
+      } catch (e) {}
+      try {
+        const frames = page.frames().slice(0, deep ? 14 : 8);
+        diagnostics.framesVisited = Math.max(diagnostics.framesVisited || 0, page.frames().length);
+        for (const frame of frames) {
+          try {
+            this.mineHtml(await frame.content(), bags, frame.url() || pageUrl);
+            const fu = await frame.evaluate(() => {
+              const out = [];
+              document.querySelectorAll('video, audio, source, iframe, track').forEach((v) => {
+                if (v.currentSrc) out.push(v.currentSrc);
+                if (v.src) out.push(v.src);
+                if (v.getAttribute) {
+                  ['data-src', 'data-url', 'data-file', 'data-hls', 'data-lazy-src'].forEach((a) => {
+                    const val = v.getAttribute(a);
+                    if (val) out.push(val);
+                  });
+                }
+              });
+              (window.__vdCaptured || []).forEach((x) => out.push(x.url));
+              return out;
+            });
+            fu.forEach((u) => this.add(bags, u));
+          } catch (e) {}
+        }
+        diagnostics.strategies.push(label + '-frames');
+      } catch (e) {}
+    };
+
+    const hasPlayable = () => {
+      const mid = this.toObj(bags, pageUrl);
+      return !!(mid.m3u8.length || mid.mp4.length || mid.mpd.length || mid.webm.length);
+    };
+
     const work = async () => {
       const cookies = await sessionManager.load(userId);
       if (cookies?.length) {
@@ -1058,6 +1225,17 @@ class VideoExtractor {
           await page.context().addCookies(cookies);
         } catch (e) {}
       }
+
+      // Parallel waiter: capture first real media response during whole interaction window
+      const mediaWait = page
+        .waitForResponse(mediaResponsePredicate, { timeout: Math.min(HARD_EXTRACT_MS - 5000, deep ? 55000 : 35000) })
+        .then((res) => {
+          try {
+            this.add(bags, res.url(), res.headers()['content-type'] || '');
+            diagnostics.mediaWaitHit = true;
+          } catch (e) {}
+        })
+        .catch(() => {});
 
       try {
         await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
@@ -1080,80 +1258,41 @@ class VideoExtractor {
       } catch (e) {}
 
       try {
-        await page.waitForLoadState('networkidle', { timeout: Math.min(5000, NAV_TIMEOUT_MS) }).catch(() => {});
-        await page.waitForTimeout(deep ? 900 : 500);
-        await page.evaluate(() => window.scrollBy(0, 280));
+        await page.waitForLoadState('networkidle', { timeout: Math.min(6000, NAV_TIMEOUT_MS) }).catch(() => {});
+        await page.waitForTimeout(deep ? 700 : 400);
+        await page.evaluate(() => {
+          window.scrollBy(0, 320);
+          window.scrollBy(0, 320);
+        });
       } catch (e) {}
 
+      diagnostics.lazyIframes = await activateLazyIframes(page);
+      await page.waitForTimeout(deep ? 800 : 400);
+
+      // Interaction round 1
       diagnostics.playClicked = await tryClickPlay(page);
-      try {
-        diagnostics.tabsClicked = await tryClickPlayerTabs(page);
-        if (diagnostics.tabsClicked) {
-          await tryClickPlay(page);
-          await page.waitForTimeout(deep ? 2000 : 1000);
-        }
-      } catch (e) {}
-      await page.waitForTimeout(deep ? 4500 : 2500);
+      diagnostics.html5Play = await forceHtml5Play(page);
+      diagnostics.tabsClicked = await tryClickPlayerTabs(page);
+      if (diagnostics.tabsClicked) {
+        await tryClickPlay(page);
+        await forceHtml5Play(page);
+      }
+      await page.waitForTimeout(deep ? 2800 : 1600);
       diagnostics.strategies.push('network');
 
-      try {
-        this.mineHtml(await page.content(), bags, pageUrl);
-        diagnostics.strategies.push('dom');
-      } catch (e) {}
+      await harvestDomAndHooks('r1');
 
-      try {
-        const fromPlayers = await scrapePlayerConfigs(page);
-        fromPlayers.forEach((u) => this.add(bags, u));
-        if (fromPlayers.length) diagnostics.strategies.push('player-config');
-      } catch (e) {}
+      // Interaction round 2 if nothing playable yet
+      if (!hasPlayable()) {
+        diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
+        diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
+        await forceHtml5Play(page);
+        await page.waitForTimeout(deep ? 3200 : 1800);
+        await harvestDomAndHooks('r2');
+      }
 
-      try {
-        const mediaUrls = await page.evaluate(() => {
-          const out = [];
-          document.querySelectorAll('video, audio, source').forEach((v) => {
-            if (v.currentSrc) out.push(v.currentSrc);
-            if (v.src) out.push(v.src);
-          });
-          try {
-            performance.getEntriesByType('resource').forEach((entry) => out.push(entry.name));
-          } catch (e) {}
-          (window.__vdCaptured || []).forEach((x) => out.push(x.url));
-          return out;
-        });
-        mediaUrls.forEach((u) => this.add(bags, u));
-        const signals = await page.evaluate(() => ({
-          mse: !!(window.__vdSignals && window.__vdSignals.mse),
-          eme: !!(window.__vdSignals && window.__vdSignals.eme)
-        }));
-        diagnostics.mseDetected = !!signals.mse;
-        if (signals.eme) diagnostics.drmSuspected = true;
-        diagnostics.strategies.push('hooks');
-      } catch (e) {}
-
-      try {
-        const frames = page.frames().slice(0, deep ? 10 : 6);
-        diagnostics.framesVisited = page.frames().length;
-        for (const frame of frames) {
-          try {
-            this.mineHtml(await frame.content(), bags, pageUrl);
-            const fu = await frame.evaluate(() => {
-              const out = [];
-              document.querySelectorAll('video, audio, source, iframe').forEach((v) => {
-                if (v.currentSrc) out.push(v.currentSrc);
-                if (v.src) out.push(v.src);
-                if (v.getAttribute && v.getAttribute('data-src')) out.push(v.getAttribute('data-src'));
-              });
-              (window.__vdCaptured || []).forEach((x) => out.push(x.url));
-              return out;
-            });
-            fu.forEach((u) => this.add(bags, u));
-          } catch (e) {}
-        }
-        diagnostics.strategies.push('frames');
-      } catch (e) {}
-
-      let mid = this.toObj(bags, pageUrl);
-      if (!(mid.m3u8.length || mid.mp4.length || mid.mpd.length || mid.webm.length)) {
+      // Embed / iframe probe
+      if (!hasPlayable()) {
         try {
           const embedded = await this.discoverEmbeddedCandidates(page, pageUrl, deep);
           if (embedded.length) {
@@ -1165,16 +1304,23 @@ class VideoExtractor {
         } catch (e) {
           diagnostics.embeddedWarning = e.message;
         }
-        mid = this.toObj(bags, pageUrl);
       }
 
-      if (deep && !(mid.m3u8.length || mid.mp4.length || mid.mpd.length || mid.webm.length)) {
+      // Deep final pass
+      if (deep && !hasPlayable()) {
+        await activateLazyIframes(page);
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
-        await page.waitForTimeout(3500);
-        try {
-          this.mineHtml(await page.content(), bags, pageUrl);
-        } catch (e) {}
+        await forceHtml5Play(page);
+        await page.waitForTimeout(3000);
+        await harvestDomAndHooks('deep');
         diagnostics.strategies.push('deep-pass');
+      }
+
+      // Give media waiter a moment if still empty
+      if (!hasPlayable()) {
+        await Promise.race([mediaWait, page.waitForTimeout(deep ? 4000 : 2000)]);
+      } else {
+        await Promise.race([mediaWait, page.waitForTimeout(500)]);
       }
     };
 
@@ -1423,9 +1569,19 @@ class VideoExtractor {
             if (looksLikeMedia(u, ct)) this.add(bags, u, ct);
           } catch (e) {}
         });
+        const waitMedia = child
+          .waitForResponse(mediaResponsePredicate, { timeout: deep ? 12000 : 8000 })
+          .then((res) => {
+            try {
+              this.add(bags, res.url(), res.headers()['content-type'] || '');
+            } catch (e) {}
+          })
+          .catch(() => {});
         await child.goto(candidate, { waitUntil: 'domcontentloaded', timeout: Math.min(NAV_TIMEOUT_MS, 20000) });
+        await activateLazyIframes(child);
         await tryClickPlay(child);
-        await child.waitForTimeout(deep ? 2200 : 1200);
+        await forceHtml5Play(child);
+        await child.waitForTimeout(deep ? 2500 : 1400);
         this.mineHtml(await child.content(), bags, candidate);
         const media = await child.evaluate(() => {
           const out = [];
@@ -1437,6 +1593,7 @@ class VideoExtractor {
           return out;
         });
         media.forEach((u) => this.add(bags, u));
+        await Promise.race([waitMedia, child.waitForTimeout(deep ? 2000 : 800)]);
         const found = this.toObj(bags, candidate);
         if (found.m3u8.length || found.mp4.length || found.mpd.length || found.webm.length) break;
       } catch (e) {
@@ -1709,7 +1866,7 @@ class SingleFlight {
 }
 const singleFlight = new SingleFlight();
 
-const extractionQueue = new Queue('vd-pro-v43', REDIS_URL, {
+const extractionQueue = new Queue('vd-pro-v44', REDIS_URL, {
   settings: {
     stalledInterval: 20000,
     maxStalledCount: 1,
@@ -1789,7 +1946,7 @@ app.get('/api/v1/health', (req, res) => {
   res.json({
     status: 'healthy',
     name: 'Vd-Pro',
-    version: '4.3.0',
+    version: '4.4.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -1922,7 +2079,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.3.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.4.0' } })
 );
 
 async function processExtractionJob(job) {
@@ -2137,13 +2294,13 @@ process.on('SIGINT', shutdown);
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.3.0 starting...');
+    logger.info('Vd-Pro v4.4.0 starting...');
     await connectDatabase();
     browserPool = new BrowserPool(2);
     await browserPool.init();
     httpServer.listen(PORT, '0.0.0.0', () => {
-      logger.info('Vd-Pro v4.3.0 on :' + PORT);
-      console.log('VD-PRO v4.3.0 — junk filter + player config + server tabs — same API');
+      logger.info('Vd-Pro v4.4.0 on :' + PORT);
+      console.log('VD-PRO v4.4.0 — multi-round extract + media wait + lazy iframes — same API');
     });
   } catch (e) {
     logger.error({ error: e.message }, 'Startup failed');
