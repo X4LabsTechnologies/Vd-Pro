@@ -47,9 +47,9 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) =
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const OMDB_API_KEY = process.env.OMDB_API_KEY || '';
 
-const HARD_EXTRACT_MS = parseInt(process.env.HARD_EXTRACT_MS || '75000', 10);
-const HARD_SEARCH_MS = parseInt(process.env.HARD_SEARCH_MS || '25000', 10);
-const NAV_TIMEOUT_MS = parseInt(process.env.NAV_TIMEOUT_MS || '35000', 10);
+const HARD_EXTRACT_MS = parseInt(process.env.HARD_EXTRACT_MS || '110000', 10);
+const HARD_SEARCH_MS = parseInt(process.env.HARD_SEARCH_MS || '30000', 10);
+const NAV_TIMEOUT_MS = parseInt(process.env.NAV_TIMEOUT_MS || '45000', 10);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
 const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
@@ -406,7 +406,8 @@ class DASHParser {
       const bandwidth = Number(DASHParser.attr(attrs, 'bandwidth') || 0);
       const width = Number(DASHParser.attr(attrs, 'width') || 0);
       const height = Number(DASHParser.attr(attrs, 'height') || 0);
-      const repBase = resolveUrl(baseFromMpd, /<BaseURL[^>]*>([^<]+)<\/BaseURL>/i.exec(body)?.[1] || '') || baseFromMpd;
+      const inheritedBase = /<BaseURL[^>]*>([^<]+)<\/BaseURL>/i.exec(body)?.[1] || baseFromMpd;
+      const repBase = resolveUrl(baseFromMpd, inheritedBase) || baseFromMpd;
       if (!repBase || !/^https?:/i.test(repBase)) continue;
       variants.push({ url: repBase, id, bandwidth, resolution: width && height ? width + 'x' + height : null, quality: DASHParser.quality(height, width), type: 'dash' });
     }
@@ -449,51 +450,53 @@ class HLSParser {
     return String(res.data || '');
   }
 
+  static parseAttributes(input = '') {
+    const attrs = {};
+    const re = /([A-Z0-9-]+)\s*=\s*("(?:[^"]|"")*"|'[^']*'|[^,]*)/gi;
+    let m;
+    while ((m = re.exec(String(input))) !== null) {
+      attrs[m[1].toUpperCase()] = String(m[2] || '').trim().replace(/^"|"$/g, '').replace(/^'|'$/g, '');
+    }
+    return attrs;
+  }
+
   static parseMaster(text, baseUrl) {
-    const lines = text.split(/\r?\n/);
+    const lines = String(text || '').split(/\r?\n/);
     const variants = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line.startsWith('#EXT-X-STREAM-INF:')) continue;
-      const meta = line.slice('#EXT-X-STREAM-INF:'.length);
-      const bw = /BANDWIDTH=(\d+)/i.exec(meta);
-      const res = /RESOLUTION=(\d+x\d+)/i.exec(meta);
-      const name = /NAME="([^"]+)"/i.exec(meta);
-      const next = (lines[i + 1] || '').trim();
-      if (!next || next.startsWith('#')) continue;
+      const attrs = this.parseAttributes(line.slice('#EXT-X-STREAM-INF:'.length));
+      let nextIndex = i + 1;
+      while (nextIndex < lines.length && (!lines[nextIndex].trim() || lines[nextIndex].trim().startsWith('#'))) nextIndex++;
+      const next = (lines[nextIndex] || '').trim();
+      if (!next) continue;
       const abs = resolveUrl(baseUrl, next);
       if (!abs) continue;
-      let quality = name?.[1] || null;
-      if (!quality && res) {
-        const h = parseInt(res[1].split('x')[1], 10);
-        quality = h >= 2160 ? '2160p' : h >= 1080 ? '1080p' : h >= 720 ? '720p' : h >= 480 ? '480p' : h + 'p';
-      }
-      variants.push({
-        url: abs,
-        bandwidth: bw ? parseInt(bw[1], 10) : 0,
-        resolution: res?.[1] || null,
-        quality: quality || 'unknown',
-        type: 'hls'
-      });
+      const bandwidth = Number(attrs.BANDWIDTH || attrs['AVERAGE-BANDWIDTH'] || 0);
+      const resolution = attrs.RESOLUTION || null;
+      const height = resolution && resolution.includes('x') ? Number(resolution.split('x')[1]) : 0;
+      const width = resolution && resolution.includes('x') ? Number(resolution.split('x')[0]) : 0;
+      let quality = attrs.NAME || (height ? (height >= 2160 ? '2160p' : height >= 1440 ? '1440p' : height >= 1080 ? '1080p' : height >= 720 ? '720p' : height >= 480 ? '480p' : height + 'p') : null);
+      variants.push({ url: abs, bandwidth, averageBandwidth: Number(attrs['AVERAGE-BANDWIDTH'] || 0), resolution, width, height, codecs: attrs.CODECS || null, frameRate: attrs['FRAME-RATE'] || null, audioGroup: attrs.AUDIO || null, subtitleGroup: attrs.SUBTITLES || null, quality: quality || 'unknown', type: 'hls' });
+      i = nextIndex;
     }
     return variants;
   }
 
   static parseSubtitles(text, baseUrl) {
     const subs = [];
-    const lines = text.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+    const lines = String(text || '').split(/\r?\n/);
+    for (const raw of lines) {
+      const line = raw.trim();
       if (!line.startsWith('#EXT-X-MEDIA:') || !/TYPE=SUBTITLES/i.test(line)) continue;
-      const name = /NAME="([^"]+)"/i.exec(line)?.[1];
-      const lang = /LANGUAGE="([^"]+)"/i.exec(line)?.[1];
-      const group = /GROUP-ID="([^"]+)"/i.exec(line)?.[1];
-      const isDefault = /DEFAULT=YES/i.test(line);
-      const forced = /FORCED=YES/i.test(line);
-      const uri = /URI="([^"]+)"/i.exec(line)?.[1];
-      if (!uri) continue;
-      const abs = resolveUrl(baseUrl, uri);
-      if (abs) subs.push({ url: abs, language: lang || null, label: name || lang || 'subtitle', group: group || null, default: isDefault, forced, type: 'hls' });
+      const attrs = this.parseAttributes(line.slice('#EXT-X-MEDIA:'.length));
+      const uri = attrs.URI;
+      const abs = uri ? resolveUrl(baseUrl, uri) : null;
+      if (abs) subs.push({ url: abs, language: attrs.LANGUAGE || null, label: attrs.NAME || attrs.LANGUAGE || 'subtitle', group: attrs['GROUP-ID'] || null, default: String(attrs.DEFAULT).toUpperCase() === 'YES', forced: String(attrs.FORCED).toUpperCase() === 'YES', autoselect: String(attrs.AUTOSELECT).toUpperCase() === 'YES', type: 'hls' });
+    }
+    for (const u of extractUrlCandidates(String(text || ''), baseUrl)) {
+      if (/\.(vtt|srt|ass|ssa|ttml)(?:\?|#|$)/i.test(u) && !subs.some((x) => x.url === u)) subs.push({ url: u, language: null, label: 'subtitle', type: 'file' });
     }
     return subs;
   }
@@ -1312,7 +1315,7 @@ class VideoExtractor {
 
       // Parallel waiter: capture first real media response during whole interaction window
       const mediaWait = page
-        .waitForResponse(mediaResponsePredicate, { timeout: Math.min(HARD_EXTRACT_MS - 5000, deep ? 55000 : 35000) })
+        .waitForResponse(mediaResponsePredicate, { timeout: Math.min(HARD_EXTRACT_MS - 5000, deep ? 90000 : 55000) })
         .then((res) => {
           try {
             this.add(bags, res.url(), res.headers()['content-type'] || '');
@@ -1343,7 +1346,7 @@ class VideoExtractor {
 
       try {
         await page.waitForLoadState('networkidle', { timeout: Math.min(6000, NAV_TIMEOUT_MS) }).catch(() => {});
-        await page.waitForTimeout(deep ? 700 : 400);
+        await page.waitForTimeout(deep ? 1200 : 700);
         await page.evaluate(() => {
           window.scrollBy(0, 320);
           window.scrollBy(0, 320);
@@ -1361,7 +1364,7 @@ class VideoExtractor {
         await tryClickPlay(page);
         await forceHtml5Play(page);
       }
-      await page.waitForTimeout(deep ? 2800 : 1600);
+      await page.waitForTimeout(deep ? 4200 : 2200);
       diagnostics.strategies.push('network');
 
       await harvestDomAndHooks('r1');
@@ -1371,7 +1374,7 @@ class VideoExtractor {
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
         await forceHtml5Play(page);
-        await page.waitForTimeout(deep ? 3200 : 1800);
+        await page.waitForTimeout(deep ? 5000 : 2600);
         await harvestDomAndHooks('r2');
       }
 
@@ -1556,8 +1559,8 @@ class VideoExtractor {
             drmSuspected: !!a.drmSuspected
           })
     );
-    result.variants = uniqueVariants.slice(0, 20);
-    result.subtitles = [...new Map(subtitles.filter((s) => s?.url).map((s) => [s.url, s])).values()].slice(0, 15);
+    result.variants = uniqueVariants.slice(0, 40);
+    result.subtitles = [...new Map(subtitles.filter((s) => s?.url).map((s) => [s.url, s])).values()].slice(0, 40);
     result.qualities = [...new Set(result.variants.map((v) => v.quality).filter(Boolean))];
 
     const validatedVariants = result.variants.filter((v) => v.validation?.valid);
