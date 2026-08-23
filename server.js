@@ -246,6 +246,39 @@ function isJunkMediaUrl(url = '') {
   );
 }
 
+function canonicalMediaKey(url = '') {
+  try {
+    const u = new URLParser(String(url));
+    u.hash = '';
+    return u.href;
+  } catch (e) {
+    return String(url || '').split('#')[0];
+  }
+}
+
+function inferQuality(url = '', width = 0, height = 0) {
+  const h = Number(height || 0);
+  const text = String(url || '').toLowerCase();
+  const m = text.match(/(?:^|[^0-9])(2160|1440|1080|720|576|540|480|360|240)p?(?:[^0-9]|$)/);
+  const value = h || (m ? Number(m[1]) : 0);
+  if (value >= 2160) return '2160p';
+  if (value >= 1440) return '1440p';
+  if (value >= 1080) return '1080p';
+  if (value >= 720) return '720p';
+  if (value >= 576) return '576p';
+  if (value >= 480) return '480p';
+  if (value >= 360) return '360p';
+  if (value >= 240) return '240p';
+  return null;
+}
+
+function inferSubtitleLanguage(url = '', label = '', language = null) {
+  if (language) return String(language).toLowerCase();
+  const text = `${url} ${label}`.toLowerCase();
+  const m = text.match(/[._-](ar|ara|en|eng|fr|fra|de|ger|es|spa|it|ita|nl|nld|pl|pol)(?:[._-]|\?|$)/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
 function isMediaSegment(url = '') {
   return /\.(m4s|ts)(?:\?|#|$)/i.test(String(url || '')) || /\/(?:segment|chunk|fragments?)(?:\/|\?|$)/i.test(String(url || ''));
 }
@@ -907,7 +940,7 @@ function mediaResponsePredicate(res) {
     const u = res.url();
     if (!u || isRejectedMediaUrl(u) || isJunkMediaUrl(u)) return false;
     const ct = String(res.headers?.()['content-type'] || '').toLowerCase();
-    return /\.m3u8(?:\?|#|$)/i.test(u) || /\.mpd(?:\?|#|$)/i.test(u) || /\.mp4(?:\?|#|$)/i.test(u) || /\/manifest/i.test(u) || /mpegurl|dash\+xml|application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|^video\//i.test(ct);
+    return /\.m3u8(?:\?|#|$)/i.test(u) || /\.mpd(?:\?|#|$)/i.test(u) || /\.mp4(?:\?|#|$)/i.test(u) || /\/(?:manifest|playlist|master|stream)(?:\/|\?|$)/i.test(u) || /mpegurl|dash\+xml|application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|^video\//i.test(ct);
   } catch (e) {
     return false;
   }
@@ -988,6 +1021,9 @@ class ResultValidator {
     if (/\.mpd(?:\?|#|$)/i.test(url) && !/<MPD[\s>]/i.test(String(body || ''))) {
       return { valid: false, reason: 'INVALID_MPD', status, contentType };
     }
+    if (/\.mp4(?:\?|#|$)/i.test(url) && (/text\/html|application\/json/i.test(String(contentType || '')) || /^\s*<(?:!doctype|html|body)\b/i.test(String(body || '')))) {
+      return { valid: false, reason: 'HTML_NOT_MEDIA', status, contentType };
+    }
     if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(String(body || ''))) {
       return { valid: false, reason: 'DRM_OR_ENCRYPTED_HLS', status, contentType, drmSuspected: true };
     }
@@ -1011,7 +1047,7 @@ class ResultValidator {
       const headers = response.headers() || {};
       const contentType = headers['content-type'] || '';
       const cl = headers['content-length'] ? parseInt(headers['content-length'], 10) : null;
-      const body = /m3u8|mpd|manifest|playlist/i.test(url) ? await response.text().catch(() => '') : '';
+      const body = /m3u8|mpd|manifest|playlist/i.test(url) || /text\/html|application\/json/i.test(contentType) ? await response.text().catch(() => '') : '';
       return this.inspect(url, response.status(), contentType, body, cl);
     } catch (e) {
       return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
@@ -1111,7 +1147,7 @@ class VideoExtractor {
         }
         if ($(el).is('track')) {
           const v = $(el).attr('src');
-          if (v) bags.subtitles.add(resolveUrl(base, v) || v);
+          if (v) { const abs = resolveUrl(base, v) || v; bags.subtitles.add(abs); }
         }
       }
     );
@@ -1190,6 +1226,7 @@ class VideoExtractor {
     const bags = this.empty();
     if (looksLikeMedia(pageUrl)) this.add(bags, pageUrl);
     const mediaReferers = new Map();
+    const mediaHeaders = new Map();
     let finished = false;
 
     const onRequest = (req) => {
@@ -1198,6 +1235,7 @@ class VideoExtractor {
         const u = req.url();
         const headers = req.headers();
         if (headers.referer && (looksLikeMedia(u) || looksLikeSubtitle(u))) mediaReferers.set(u, headers.referer);
+        if (looksLikeMedia(u) || looksLikeSubtitle(u)) mediaHeaders.set(canonicalMediaKey(u), { referer: headers.referer || pageUrl, origin: headers.origin || null, cookie: headers.cookie || null });
         if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
           diagnostics.mediaRequests++;
           this.add(bags, u);
@@ -1217,7 +1255,7 @@ class VideoExtractor {
         const lowerType = String(ct).toLowerCase();
         if (lowerType.includes('text/') || lowerType.includes('json') || lowerType.includes('octet-stream')) {
           const path = u.toLowerCase();
-          if (/manifest|playlist|stream|media|video|source|\.json(?:\?|$)/i.test(path)) {
+          if (/manifest|playlist|stream|media|video|source|player|config|\.json(?:\?|$)/i.test(path)) {
             const body = await response.text().catch(() => '');
             if (/^\s*#EXTM3U/m.test(body) || /<MPD[\s>]/i.test(body)) this.add(bags, u, ct);
             if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(body)) diagnostics.drmSuspected = true;
@@ -1249,13 +1287,17 @@ class VideoExtractor {
       try {
         const mediaUrls = await page.evaluate(() => {
           const out = [];
-          document.querySelectorAll('video, audio, source, track').forEach((v) => {
+          const nodes = [...document.querySelectorAll('video, audio, source, track, iframe, [data-src], [data-url], [data-file], [data-hls], [data-mp4], [data-m3u8]')];
+          const walk = (root) => {
+            if (!root || !root.querySelectorAll) return;
+            root.querySelectorAll('video, audio, source, track, iframe, [data-src], [data-url], [data-file], [data-hls], [data-mp4], [data-m3u8]').forEach((x) => nodes.push(x));
+            root.querySelectorAll('*').forEach((x) => { if (x.shadowRoot) walk(x.shadowRoot); });
+          };
+          document.querySelectorAll('*').forEach((x) => { if (x.shadowRoot) walk(x.shadowRoot); });
+          nodes.forEach((v) => {
             if (v.currentSrc) out.push(v.currentSrc);
             if (v.src) out.push(v.src);
-            if (v.getAttribute) {
-              const ds = v.getAttribute('data-src');
-              if (ds) out.push(ds);
-            }
+            if (v.getAttribute) ['src','data-src','data-url','data-file','data-hls','data-mp4','data-m3u8'].forEach((a) => { const value = v.getAttribute(a); if (value) out.push(value); });
           });
           try {
             performance.getEntriesByType('resource').forEach((entry) => out.push(entry.name));
@@ -1374,7 +1416,7 @@ class VideoExtractor {
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
         await forceHtml5Play(page);
-        await page.waitForTimeout(deep ? 5000 : 2600);
+        await page.waitForTimeout(deep ? 6500 : 3200);
         await harvestDomAndHooks('r2');
       }
 
@@ -1447,7 +1489,7 @@ class VideoExtractor {
     const variants = [];
     const subtitles = [];
     const hlsResults = await Promise.all(
-      result.urls.m3u8.slice(0, 16).map(async (m) => {
+      result.urls.m3u8.slice(0, 32).map(async (m) => {
         try {
           return await withTimeout(HLSParser.enrich(m, mediaReferers.get(m) || pageUrl), 8000, 'HLS_TIMEOUT');
         } catch (e) {
@@ -1463,7 +1505,7 @@ class VideoExtractor {
       subtitles.push(...(en.subtitles || []));
     }
     const dashResults = await Promise.all(
-      result.urls.mpd.slice(0, 12).map(async (m) => {
+      result.urls.mpd.slice(0, 24).map(async (m) => {
         try {
           return await withTimeout(DASHParser.enrich(m, mediaReferers.get(m) || pageUrl), 8000, 'DASH_TIMEOUT');
         } catch (e) {
@@ -1491,8 +1533,10 @@ class VideoExtractor {
               !isRejectedMediaUrl(v.url) &&
               !isJunkMediaUrl(v.url) &&
               !isMediaSegment(v.url)
-          )
-          .map((v) => [v.url, v])
+          ).map((v) => {
+            v.quality = v.quality && v.quality !== 'media' && v.quality !== 'unknown' ? v.quality : (inferQuality(v.url, v.width, v.height) || v.quality || 'unknown');
+            return [canonicalMediaKey(v.url), v];
+          })
       ).values()
     ];
 
@@ -1542,6 +1586,7 @@ class VideoExtractor {
     for (const x of validationResults) {
       x.variant.validation = x.check;
       x.variant.referer = x.referer;
+      x.variant.requestContext = mediaHeaders.get(canonicalMediaKey(x.variant.url)) || { referer: x.referer };
       if (x.check.drmSuspected) diagnostics.drmSuspected = true;
     }
 
@@ -1560,7 +1605,7 @@ class VideoExtractor {
           })
     );
     result.variants = uniqueVariants.slice(0, 40);
-    result.subtitles = [...new Map(subtitles.filter((s) => s?.url).map((s) => [s.url, s])).values()].slice(0, 40);
+    result.subtitles = [...new Map(subtitles.filter((s) => s?.url).map((s) => { s.language = inferSubtitleLanguage(s.url, s.label, s.language); return [canonicalMediaKey(s.url), s]; })).values()].slice(0, 80);
     result.qualities = [...new Set(result.variants.map((v) => v.quality).filter(Boolean))];
 
     const validatedVariants = result.variants.filter((v) => v.validation?.valid);
