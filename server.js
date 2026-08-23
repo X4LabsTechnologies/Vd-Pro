@@ -342,11 +342,11 @@ const httpClient = axios.create({
 });
 
 class HLSParser {
-  static async fetchText(url) {
+  static async fetchText(url, referer = null) {
     const res = await httpClient.get(url, {
       maxContentLength: 2_000_000,
-      headers: { Accept: '*/*' },
-      timeout: 10000
+      headers: { Accept: '*/*', ...(referer ? { Referer: referer } : {}) },
+      timeout: 8000
     });
     return String(res.data || '');
   }
@@ -397,9 +397,9 @@ class HLSParser {
     return subs;
   }
 
-  static async enrich(m3u8Url) {
+  static async enrich(m3u8Url, referer = null) {
     try {
-      const text = await this.fetchText(m3u8Url);
+      const text = await this.fetchText(m3u8Url, referer);
       if (!text.includes('#EXTM3U')) return { variants: [], subtitles: [] };
       const subtitles = this.parseSubtitles(text, m3u8Url);
       if (text.includes('#EXT-X-STREAM-INF')) {
@@ -999,15 +999,18 @@ class VideoExtractor {
 
     const variants = [];
     const subtitles = [];
-    for (const m of result.urls.m3u8.slice(0, 4)) {
-      try {
-        const en = await withTimeout(HLSParser.enrich(m), 8000, 'HLS_TIMEOUT');
-        if (en.variants && en.variants.length) variants.push(...en.variants);
-        else variants.push({ url: m, quality: 'unknown', bandwidth: 0, type: 'hls' });
-        if (en.subtitles && en.subtitles.length) subtitles.push(...en.subtitles);
-      } catch (e) {
-        variants.push({ url: m, quality: 'unknown', bandwidth: 0, type: 'hls' });
-      }
+    const hlsResults = await Promise.all(
+      result.urls.m3u8.slice(0, 8).map(async (m) => {
+        try {
+          return await withTimeout(HLSParser.enrich(m, pageUrl), 8000, 'HLS_TIMEOUT');
+        } catch (e) {
+          return { variants: [{ url: m, quality: 'unknown', bandwidth: 0, type: 'hls' }], subtitles: [] };
+        }
+      })
+    );
+    for (const en of hlsResults) {
+      variants.push(...(en.variants?.length ? en.variants : []));
+      subtitles.push(...(en.subtitles || []));
     }
     for (const m of result.urls.mp4) variants.push({ url: m, quality: 'mp4', bandwidth: 0, type: 'mp4' });
     for (const m of result.urls.webm) variants.push({ url: m, quality: 'webm', bandwidth: 0, type: 'webm' });
@@ -1017,12 +1020,22 @@ class VideoExtractor {
       subtitles.push({ url: s, language: null, label: 'subtitle', type: 'file' });
     }
 
-    variants.sort((a, b) => rankScore(b.url) - rankScore(a.url));
-      result.variants = variants.slice(0, 20);
-    result.subtitles = subtitles.slice(0, 15);
+        const uniqueVariants = [...new Map(variants.filter((v) => v?.url && !isRejectedMediaUrl(v.url) && !isMediaSegment(v.url)).map((v) => [v.url, v])).values()];
+    const validationResults = await Promise.all(
+      uniqueVariants.slice(0, 24).map(async (v) => {
+        const pageCheck = await ResultValidator.validateWithPage(v.url, page, pageUrl);
+        const fallback = pageCheck.valid ? pageCheck : await ResultValidator.validate(v.url, pageUrl);
+        return { variant: v, check: fallback };
+      })
+    );
+    const checkByUrl = new Map(validationResults.map((x) => [x.variant.url, x.check]));
+    for (const v of uniqueVariants) v.validation = checkByUrl.get(v.url) || { valid: false, reason: 'NOT_CHECKED' };
+    uniqueVariants.sort((a, b) => Number(b.validation?.valid) - Number(a.validation?.valid) || rankScore(b.url) - rankScore(a.url));
+    result.variants = uniqueVariants.slice(0, 20);
+    result.subtitles = [...new Map(subtitles.filter((s) => s?.url).map((s) => [s.url, s])).values()].slice(0, 15);
     result.qualities = [...new Set(result.variants.map((v) => v.quality).filter(Boolean))];
-
-    const picked = pickByQuality(result.variants, quality);
+    const validatedVariants = result.variants.filter((v) => v.validation?.valid);
+    const picked = pickByQuality(validatedVariants.length ? validatedVariants : result.variants, quality);
     if (picked && picked.url) {
       result.primaryUrl = picked.url;
       result.success = true;
@@ -1031,8 +1044,8 @@ class VideoExtractor {
       result.errorCode = null;
       try {
         result.linkMeta = extractLinkMeta(result.primaryUrl, pageUrl);
-        const v = await ResultValidator.validate(result.primaryUrl, pageUrl);
-        result.validated = v.valid;
+        const v = picked.validation || await ResultValidator.validateWithPage(result.primaryUrl, page, pageUrl);
+        result.validated = !!v.valid;
         if (!v.valid) result.validationReason = v.reason;
       } catch (e) {
         result.validated = false;
@@ -1136,6 +1149,34 @@ class VideoExtractor {
 }
 
 class ResultValidator {
+  static inspect(url, status, contentType, body = '') {
+    if (status < 200 || status >= 400) return { valid: false, reason: 'INVALID_STATUS', status, contentType };
+    if (/\.m3u8(?:\?|#|$)/i.test(url) && !String(body || '').includes('#EXTM3U')) {
+      return { valid: false, reason: 'INVALID_M3U8', status, contentType };
+    }
+    if (/\.mpd(?:\?|#|$)/i.test(url) && !/<MPD[\s>]/i.test(String(body || ''))) {
+      return { valid: false, reason: 'INVALID_MPD', status, contentType };
+    }
+    return { valid: true, reason: null, status, contentType };
+  }
+
+  static async validateWithPage(url, page, referer = null) {
+    if (!page?.context) return { valid: false, reason: 'NO_PAGE_CONTEXT' };
+    try {
+      const response = await page.context().request.get(url, {
+        timeout: 7000,
+        failOnStatusCode: false,
+        maxRedirects: 4,
+        headers: { Accept: '*/*', ...(referer ? { Referer: referer } : {}) }
+      });
+      const contentType = response.headers()['content-type'] || '';
+      const body = /m3u8|mpd|manifest|playlist/i.test(url) ? await response.text().catch(() => '') : '';
+      return this.inspect(url, response.status(), contentType, body);
+    } catch (e) {
+      return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
+    }
+  }
+
   static async validate(url, referer = null) {
     if (!url) return { valid: false, reason: 'NO_URL' };
     try {
@@ -1155,11 +1196,7 @@ class ResultValidator {
           ...(referer ? { Referer: referer, Origin: new URLParser(referer).origin } : {})
         }
       });
-      if (res.status < 200 || res.status >= 400) return { valid: false, reason: 'INVALID_STATUS' };
-      if (url.includes('.m3u8') && !String(res.data || '').includes('#EXTM3U')) {
-        return { valid: false, reason: 'INVALID_M3U8' };
-      }
-      return { valid: true };
+      return this.inspect(url, res.status, res.headers?.['content-type'] || '', res.data || '');
     } catch (e) {
       return { valid: false, reason: 'VALIDATION_FAILED' };
     }
