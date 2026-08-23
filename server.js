@@ -793,12 +793,15 @@ class VideoExtractor {
 
     const bags = this.empty();
     if (looksLikeMedia(pageUrl)) this.add(bags, pageUrl);
+    const mediaReferers = new Map();
     let finished = false;
 
     const onRequest = (req) => {
       try {
         diagnostics.requestsObserved++;
         const u = req.url();
+        const headers = req.headers();
+        if (headers.referer && (looksLikeMedia(u) || looksLikeSubtitle(u))) mediaReferers.set(u, headers.referer);
         if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
           diagnostics.mediaRequests++;
           this.add(bags, u);
@@ -1002,7 +1005,7 @@ class VideoExtractor {
     const hlsResults = await Promise.all(
       result.urls.m3u8.slice(0, 8).map(async (m) => {
         try {
-          return await withTimeout(HLSParser.enrich(m, pageUrl), 8000, 'HLS_TIMEOUT');
+          return await withTimeout(HLSParser.enrich(m, mediaReferers.get(m) || pageUrl), 8000, 'HLS_TIMEOUT');
         } catch (e) {
           return { variants: [{ url: m, quality: 'unknown', bandwidth: 0, type: 'hls' }], subtitles: [] };
         }
@@ -1023,8 +1026,9 @@ class VideoExtractor {
         const uniqueVariants = [...new Map(variants.filter((v) => v?.url && !isRejectedMediaUrl(v.url) && !isMediaSegment(v.url)).map((v) => [v.url, v])).values()];
     const validationResults = await Promise.all(
       uniqueVariants.slice(0, 24).map(async (v) => {
-        const pageCheck = await ResultValidator.validateWithPage(v.url, page, pageUrl);
-        const fallback = pageCheck.valid ? pageCheck : await ResultValidator.validate(v.url, pageUrl);
+        const referer = v.referer || mediaReferers.get(v.url) || pageUrl;
+        const pageCheck = await ResultValidator.validateWithPage(v.url, page, referer);
+        const fallback = pageCheck.valid ? pageCheck : await ResultValidator.validate(v.url, referer);
         return { variant: v, check: fallback };
       })
     );
@@ -1043,8 +1047,8 @@ class VideoExtractor {
       result.error = null;
       result.errorCode = null;
       try {
-        result.linkMeta = extractLinkMeta(result.primaryUrl, pageUrl);
-        const v = picked.validation || await ResultValidator.validateWithPage(result.primaryUrl, page, pageUrl);
+        result.linkMeta = extractLinkMeta(result.primaryUrl, picked.referer || mediaReferers.get(result.primaryUrl) || pageUrl);
+        const v = picked.validation || await ResultValidator.validateWithPage(result.primaryUrl, page, result.linkMeta.referer);
         result.validated = !!v.valid;
         if (!v.valid) result.validationReason = v.reason;
       } catch (e) {
