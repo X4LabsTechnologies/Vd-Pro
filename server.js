@@ -1824,6 +1824,45 @@ class SearchProvider {
     }
   }
 
+  async searchBing(query, map) {
+    try {
+      const { data } = await httpClient.get('https://www.bing.com/search', {
+        params: { q: query, count: 10, setlang: 'ar' },
+        timeout: 12000,
+        headers: { Accept: 'text/html,application/xhtml+xml' }
+      });
+      const $ = cheerio.load(String(data || ''));
+      $('li.b_algo').each((_, el) => {
+        const a = $(el).find('h2 a').first();
+        const href = a.attr('href');
+        const title = a.text().trim();
+        const snippet = $(el).find('.b_caption p, .b_paractl').first().text().trim();
+        if (!href || !title) return;
+        let url = href;
+        try {
+          const parsed = new URLParser(href);
+          const encoded = parsed.searchParams.get('u');
+          if (encoded && encoded.startsWith('a1')) {
+            const decoded = Buffer.from(encoded.slice(2), 'base64url').toString('utf8');
+            if (/^https?:\/\//i.test(decoded)) url = decoded;
+          }
+        } catch (e) {}
+        if (!/^https?:\/\//i.test(url)) return;
+        this.add(map, {
+          name: title,
+          title: snippet ? title + ' — ' + snippet : title,
+          url,
+          source: 'bing-html',
+          query,
+          boost: 0.12,
+          overview: snippet || null
+        });
+      });
+    } catch (e) {
+      logger.warn({ error: e.message }, 'Bing search failed');
+    }
+  }
+
   async searchWikipedia(query, map) {
     try {
       const { data } = await httpClient.get('https://en.wikipedia.org/w/api.php', {
@@ -1921,6 +1960,9 @@ class SearchProvider {
       this.searchDuckDuckGoHtml(q, map),
       this.searchDuckDuckGoHtml(watchQuery, map),
       this.searchDuckDuckGoHtml(arabicWatchQuery, map),
+      this.searchBing(q, map),
+      this.searchBing(watchQuery, map),
+      this.searchBing(arabicWatchQuery, map),
       this.searchWikipedia(q, map),
       this.searchTMDB(q, map),
       this.searchOMDb(q, map)
