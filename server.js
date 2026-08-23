@@ -1,10 +1,7 @@
 /**
- * Vd-Pro v3.1 — Professional Video Extraction Platform
- * - Search by name (structured results)
- * - Optional search → extract pipeline
- * - Stronger network/DOM/iframe capture
- * - HLS variants + quality
- * - Security: JWT, job ownership, SSRF, WS auth
+ * Vd-Pro v3.2 — Professional Video Extraction Platform
+ * Search fixed: API-first (DDG Instant + Wikipedia + optional TMDB)
+ * Browser search only as fallback
  */
 
 import express from 'express';
@@ -41,6 +38,7 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://localhost:27017/vd-pro';
 const PROXIES = (process.env.PROXIES || '').split(',').map((p) => p.trim()).filter(Boolean);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '90000', 10);
 
 if (NODE_ENV === 'production') {
@@ -92,7 +90,7 @@ async function connectDatabase() {
     });
     await mongoClient.connect();
     db = mongoClient.db('vd-pro');
-    for (const col of ['users', 'extractions', 'cache', 'sessions', 'failed_jobs', 'diagnostics', 'webhooks']) {
+    for (const col of ['users', 'extractions', 'cache', 'sessions', 'failed_jobs', 'diagnostics']) {
       try {
         await db.createCollection(col);
       } catch (e) {}
@@ -199,7 +197,6 @@ function rankScore(url) {
   if (u.includes('.mpd')) s += 35;
   if (u.includes('1080') || u.includes('1920')) s += 20;
   if (u.includes('720')) s += 12;
-  if (u.includes('480')) s += 5;
   if (u.includes('preview') || u.includes('trailer') || u.includes('thumb')) s -= 15;
   if (u.startsWith('blob:')) s -= 40;
   return s;
@@ -230,27 +227,31 @@ function titleSimilarity(a, b) {
     .trim();
   if (!na || !nb) return 0;
   if (na === nb) return 1;
-  if (na.includes(nb) || nb.includes(na)) return 0.85;
-  const wa = new Set(na.split(' ').filter((w) => w.length > 2));
-  const wb = new Set(nb.split(' ').filter((w) => w.length > 2));
+  if (na.includes(nb) || nb.includes(na)) return 0.9;
+  const wa = new Set(na.split(' ').filter((w) => w.length > 1));
+  const wb = new Set(nb.split(' ').filter((w) => w.length > 1));
   if (!wa.size || !wb.size) return 0;
   let inter = 0;
   for (const w of wa) if (wb.has(w)) inter++;
   return inter / Math.max(wa.size, wb.size);
 }
 
+const httpClient = axios.create({
+  timeout: 15000,
+  maxRedirects: 5,
+  headers: {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    Accept: 'application/json, text/html, */*'
+  },
+  validateStatus: (s) => s >= 200 && s < 400
+});
+
 class HLSParser {
   static async fetchText(url) {
-    const res = await axios.get(url, {
-      timeout: 12000,
-      maxRedirects: 5,
-      maxContentLength: 2_000_000,
-      validateStatus: (s) => s >= 200 && s < 400,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', Accept: '*/*' }
-    });
+    const res = await httpClient.get(url, { maxContentLength: 2_000_000, headers: { Accept: '*/*' } });
     return String(res.data || '');
   }
-
   static parseMaster(text, baseUrl) {
     const lines = text.split(/\r?\n/);
     const variants = [];
@@ -279,7 +280,6 @@ class HLSParser {
     }
     return variants;
   }
-
   static async enrich(m3u8Url) {
     try {
       const text = await this.fetchText(m3u8Url);
@@ -289,7 +289,7 @@ class HLSParser {
       }
       return { type: 'media', variants: [{ url: m3u8Url, quality: 'media', bandwidth: 0 }] };
     } catch (e) {
-      return { type: 'error', variants: [], error: e.message };
+      return { type: 'error', variants: [] };
     }
   }
 }
@@ -297,19 +297,16 @@ class HLSParser {
 class StealthGenerator {
   static script() {
     const vendor = ['Intel Inc.', 'NVIDIA Corporation', 'AMD'][Math.floor(Math.random() * 3)];
-    const renderer = ['Intel UHD Graphics 630', 'NVIDIA GeForce GTX 1660', 'AMD Radeon RX 580'][Math.floor(Math.random() * 3)];
-    const mem = [8, 16][Math.floor(Math.random() * 2)];
-    const cpu = [4, 8][Math.floor(Math.random() * 2)];
+    const renderer = ['Intel UHD Graphics 630', 'NVIDIA GeForce GTX 1660', 'AMD Radeon RX 580'][
+      Math.floor(Math.random() * 3)
+    ];
     return `(function(){'use strict';
 Object.defineProperty(navigator,'webdriver',{get:()=>false});
 try{delete navigator.__proto__.webdriver}catch(e){}
-Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});
-Object.defineProperty(navigator,'plugins',{get:()=>[{name:'Chrome PDF Plugin'},{name:'Chrome PDF Viewer'}]});
+Object.defineProperty(navigator,'languages',{get:()=>['en-US','en','ar']});
 window.chrome=window.chrome||{runtime:{},app:{}};
 const gp=WebGLRenderingContext.prototype.getParameter;
 WebGLRenderingContext.prototype.getParameter=function(p){if(p===37445)return '${vendor}';if(p===37446)return '${renderer}';return gp.call(this,p)};
-Object.defineProperty(navigator,'deviceMemory',{value:${mem}});
-Object.defineProperty(navigator,'hardwareConcurrency',{value:${cpu}});
 Object.defineProperty(navigator,'vendor',{value:'Google Inc.'});
 })();`;
   }
@@ -403,24 +400,17 @@ class BrowserContextPool {
     this.inUse = new Map();
   }
   ua() {
-    const list = [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    ];
-    return list[Math.floor(Math.random() * list.length)];
+    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
   }
   async create(proxy = null) {
     const opts = {
       ignoreHTTPSErrors: true,
       viewport: { width: 1920, height: 1080 },
       locale: 'en-US',
-      timezoneId: 'America/New_York',
       userAgent: this.ua(),
       extraHTTPHeaders: {
         'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        DNT: '1'
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       }
     };
     if (proxy?.url) opts.proxy = { server: proxy.url };
@@ -513,22 +503,19 @@ let browserPool = null;
 
 async function gentleInteract(page) {
   try {
-    await page.waitForTimeout(500 + Math.random() * 800);
-    await page.evaluate(() => window.scrollBy({ top: 250 + Math.random() * 400, behavior: 'smooth' }));
     await page.waitForTimeout(400 + Math.random() * 600);
+    await page.evaluate(() => window.scrollBy({ top: 300, behavior: 'smooth' }));
+    await page.waitForTimeout(400);
   } catch (e) {}
 }
 
 async function tryClickPlay(page) {
   const selectors = [
     'button[aria-label*="Play" i]',
-    'button[title*="Play" i]',
     '.vjs-big-play-button',
-    '.ytp-large-play-button',
     '.plyr__control--overlaid',
     '.jw-icon-display',
     'button.play',
-    '.play-button',
     'video'
   ];
   for (const sel of selectors) {
@@ -536,86 +523,246 @@ async function tryClickPlay(page) {
       const el = await page.$(sel);
       if (!el) continue;
       await el.click({ timeout: 1500 }).catch(() => {});
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(600);
       return true;
     } catch (e) {}
   }
   return false;
 }
 
-/** Search by name — multi-strategy, ranked by title match */
+/**
+ * SearchProvider v3.2 — API first (no brittle HTML scraping)
+ */
 class SearchProvider {
-  async searchByName(query, page) {
+  add(map, item) {
+    const url = item.url;
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    if (/duckduckgo\.com|google\.[a-z.]+\/search|bing\.com\/search|wikipedia\.org\/w\/api/i.test(url)) return;
+    const score =
+      (item.score ?? titleSimilarity(item.query || '', item.title || item.name || '')) + (item.boost || 0);
+    const prev = map.get(url);
+    if (!prev || score > prev.score) {
+      map.set(url, {
+        name: item.name || item.title || url,
+        title: item.title || item.name || url,
+        url,
+        score,
+        source: item.source || 'unknown',
+        type: item.type || 'link',
+        year: item.year || null,
+        overview: item.overview || null
+      });
+    }
+  }
+
+  async searchDuckDuckGoAPI(query, map) {
+    try {
+      const { data } = await httpClient.get('https://api.duckduckgo.com/', {
+        params: { q: query, format: 'json', no_redirect: 1, no_html: 1, skip_disambig: 1 }
+      });
+      if (data?.Heading && data?.AbstractURL) {
+        this.add(map, {
+          name: data.Heading,
+          title: data.Heading,
+          url: data.AbstractURL,
+          source: 'ddg-api',
+          type: 'abstract',
+          overview: data.Abstract || null,
+          query,
+          boost: 0.15
+        });
+      }
+      const topics = [...(data?.RelatedTopics || [])];
+      for (const t of topics) {
+        if (t.Topics) {
+          for (const sub of t.Topics) {
+            if (sub.FirstURL && sub.Text) {
+              this.add(map, {
+                name: sub.Text.split(' - ')[0].slice(0, 120),
+                title: sub.Text.slice(0, 160),
+                url: sub.FirstURL,
+                source: 'ddg-api',
+                type: 'related',
+                query,
+                boost: 0.05
+              });
+            }
+          }
+        } else if (t.FirstURL && t.Text) {
+          this.add(map, {
+            name: t.Text.split(' - ')[0].slice(0, 120),
+            title: t.Text.slice(0, 160),
+            url: t.FirstURL,
+            source: 'ddg-api',
+            type: 'related',
+            query,
+            boost: 0.05
+          });
+        }
+      }
+      if (data?.Results?.length) {
+        for (const r of data.Results) {
+          if (r.FirstURL && r.Text) {
+            this.add(map, {
+              name: r.Text.slice(0, 120),
+              title: r.Text.slice(0, 160),
+              url: r.FirstURL,
+              source: 'ddg-api',
+              type: 'result',
+              query,
+              boost: 0.08
+            });
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn({ error: e.message }, 'DDG API search failed');
+    }
+  }
+
+  async searchWikipedia(query, map) {
+    try {
+      const { data } = await httpClient.get('https://en.wikipedia.org/w/api.php', {
+        params: { action: 'opensearch', search: query, limit: 10, namespace: 0, format: 'json' }
+      });
+      const titles = data?.[1] || [];
+      const descs = data?.[2] || [];
+      const urls = data?.[3] || [];
+      for (let i = 0; i < titles.length; i++) {
+        this.add(map, {
+          name: titles[i],
+          title: descs[i] ? `${titles[i]} — ${descs[i]}` : titles[i],
+          url: urls[i],
+          source: 'wikipedia',
+          type: 'wiki',
+          query,
+          boost: 0.12
+        });
+      }
+      if (/[\u0600-\u06FF]/.test(query)) {
+        const ar = await httpClient.get('https://ar.wikipedia.org/w/api.php', {
+          params: { action: 'opensearch', search: query, limit: 8, namespace: 0, format: 'json' }
+        });
+        const t2 = ar.data?.[1] || [];
+        const d2 = ar.data?.[2] || [];
+        const u2 = ar.data?.[3] || [];
+        for (let i = 0; i < t2.length; i++) {
+          this.add(map, {
+            name: t2[i],
+            title: d2[i] ? `${t2[i]} — ${d2[i]}` : t2[i],
+            url: u2[i],
+            source: 'wikipedia-ar',
+            type: 'wiki',
+            query,
+            boost: 0.12
+          });
+        }
+      }
+    } catch (e) {
+      logger.warn({ error: e.message }, 'Wikipedia search failed');
+    }
+  }
+
+  async searchTMDB(query, map) {
+    if (!TMDB_API_KEY) return;
+    try {
+      const { data } = await httpClient.get('https://api.themoviedb.org/3/search/multi', {
+        params: {
+          api_key: TMDB_API_KEY,
+          query,
+          include_adult: false,
+          language: 'en-US',
+          page: 1
+        }
+      });
+      for (const item of data?.results || []) {
+        if (item.media_type !== 'movie' && item.media_type !== 'tv') continue;
+        const name = item.title || item.name;
+        const year = (item.release_date || item.first_air_date || '').slice(0, 4) || null;
+        const tmdbUrl =
+          item.media_type === 'movie'
+            ? `https://www.themoviedb.org/movie/${item.id}`
+            : `https://www.themoviedb.org/tv/${item.id}`;
+        this.add(map, {
+          name: year ? `${name} (${year})` : name,
+          title: item.overview ? `${name} — ${String(item.overview).slice(0, 120)}` : name,
+          url: tmdbUrl,
+          source: 'tmdb',
+          type: item.media_type,
+          year,
+          overview: item.overview || null,
+          query,
+          boost: 0.2
+        });
+      }
+    } catch (e) {
+      logger.warn({ error: e.message }, 'TMDB search failed');
+    }
+  }
+
+  async searchBrowserBing(query, page, map) {
+    if (!page) return;
+    try {
+      const url = `https://www.bing.com/search?q=${encodeURIComponent(query + ' series OR movie')}`;
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      await page.waitForTimeout(2000);
+      const links = await page.evaluate(() => {
+        const out = [];
+        document.querySelectorAll('li.b_algo h2 a, h2 a').forEach((a) => {
+          const title = (a.textContent || '').trim();
+          const href = a.href;
+          if (title && href && href.startsWith('http')) out.push({ title: title.slice(0, 160), url: href });
+        });
+        return out.slice(0, 15);
+      });
+      for (const l of links) {
+        this.add(map, {
+          name: l.title,
+          title: l.title,
+          url: l.url,
+          source: 'bing',
+          type: 'web',
+          query,
+          boost: 0.03
+        });
+      }
+    } catch (e) {
+      logger.warn({ error: e.message }, 'Bing browser search failed');
+    }
+  }
+
+  async searchByName(query, page = null) {
     const q = String(query || '').trim();
     if (!q) return [];
 
-    const collected = new Map(); // url -> { title, url, score, source }
+    const map = new Map();
 
-    const add = (title, url, source, boost = 0) => {
-      if (!url || !/^https?:\/\//i.test(url)) return;
-      if (/duckduckgo\.com|google\.[a-z]+\/search|bing\.com\/search/i.test(url)) return;
-      const score = titleSimilarity(q, title) + boost;
-      const prev = collected.get(url);
-      if (!prev || score > prev.score) {
-        collected.set(url, {
-          name: title || url,
-          title: title || url,
-          url,
-          score: Math.round(score * 1000) / 1000,
-          source
-        });
-      }
-    };
+    await Promise.all([
+      this.searchDuckDuckGoAPI(q, map),
+      this.searchDuckDuckGoAPI(`${q} TV series`, map),
+      this.searchWikipedia(q, map),
+      this.searchTMDB(q, map)
+    ]);
 
-    // Strategy 1: DuckDuckGo HTML
-    try {
-      const ddg = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q + ' watch online')}`;
-      await page.goto(ddg, { waitUntil: 'domcontentloaded', timeout: 35000 });
-      await page.waitForTimeout(1500);
-      const links = await page.evaluate(() => {
-        const out = [];
-        document.querySelectorAll('a.result__a, a[href]').forEach((a) => {
-          const title = (a.textContent || '').trim();
-          const href = a.href;
-          if (title && href) out.push({ title: title.slice(0, 160), url: href });
-        });
-        return out.slice(0, 25);
-      });
-      for (const l of links) add(l.title, l.url, 'duckduckgo', 0.05);
-    } catch (e) {
-      logger.warn({ error: e.message }, 'DDG search failed');
+    if (map.size < 3 && page) {
+      await this.searchBrowserBing(q, page, map);
     }
 
-    // Strategy 2: DuckDuckGo lite alternate query (series/movie keywords)
-    try {
-      const ddg2 = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`"${q}" episode OR movie OR مسلسل OR فيلم`)}`;
-      await page.goto(ddg2, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(1200);
-      const links2 = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('a.result__a, a[href]'))
-          .map((a) => ({ title: (a.textContent || '').trim().slice(0, 160), url: a.href }))
-          .filter((x) => x.title && x.url)
-          .slice(0, 20)
-      );
-      for (const l of links2) add(l.title, l.url, 'duckduckgo-alt', 0.02);
-    } catch (e) {}
+    let results = [...map.values()].sort((a, b) => b.score - a.score);
+    const strong = results.filter((r) => r.score >= 0.15);
+    if (strong.length >= 2) results = strong;
 
-    // Rank: higher title similarity first, drop very weak matches if we have good ones
-    let results = [...collected.values()].sort((a, b) => b.score - a.score);
-
-    const strong = results.filter((r) => r.score >= 0.25);
-    if (strong.length >= 3) results = strong;
-
-    results = results.slice(0, 15).map((r, i) => ({
+    return results.slice(0, 15).map((r, i) => ({
       rank: i + 1,
       name: r.name,
       title: r.title,
       url: r.url,
-      matchScore: r.score,
-      source: r.source
+      matchScore: Math.round(r.score * 1000) / 1000,
+      source: r.source,
+      type: r.type,
+      year: r.year,
+      overview: r.overview
     }));
-
-    return results;
   }
 }
 
@@ -711,28 +858,46 @@ class VideoExtractor {
       diagnostics.strategies.push('network');
 
       try {
-        const dom = await this.scanDom(page, pageUrl);
-        for (const [k, arr] of Object.entries(dom)) arr.forEach((u) => bags[k]?.add(u));
+        const html = await page.content();
+        const $ = cheerio.load(html);
+        $('video, source, [data-src], [data-video], [data-url], [data-stream]').each((_, el) => {
+          for (const attr of ['src', 'data-src', 'data-video', 'data-url', 'data-stream']) {
+            const v = $(el).attr(attr);
+            if (v) this.add(bags, resolveUrl(pageUrl, v) || v);
+          }
+        });
         diagnostics.strategies.push('dom');
-      } catch (e) {}
-
-      try {
-        const scripts = await this.scanScripts(await page.content());
-        for (const [k, arr] of Object.entries(scripts)) arr.forEach((u) => bags[k]?.add(u));
+        const rules = [
+          [/(https?:\/\/[^"'\\s<>{}]+?\.m3u8[^"'\\s<>{}]*)/gi, 'm3u8'],
+          [/(https?:\/\/[^"'\\s<>{}]+?\.mp4[^"'\\s<>{}]*)/gi, 'mp4'],
+          [/(https?:\/\/[^"'\\s<>{}]+?\.mpd[^"'\\s<>{}]*)/gi, 'mpd']
+        ];
+        for (const [re, key] of rules) {
+          let m;
+          while ((m = re.exec(html)) !== null) bags[key].add(m[1]);
+        }
         diagnostics.strategies.push('script');
       } catch (e) {}
 
       if (deep || diagnostics.mediaRequests < 1) {
         try {
-          const fr = await this.scanFrames(page, pageUrl);
-          for (const [k, arr] of Object.entries(fr)) arr.forEach((u) => bags[k]?.add(u));
+          for (const frame of page.frames().slice(0, 12)) {
+            try {
+              const html = await frame.content();
+              const $ = cheerio.load(html);
+              $('video, source, [data-src]').each((_, el) => {
+                const src = $(el).attr('src') || $(el).attr('data-src');
+                if (src) this.add(bags, resolveUrl(pageUrl, src) || src);
+              });
+            } catch (e) {}
+          }
           diagnostics.strategies.push('frames');
         } catch (e) {}
       }
 
       page.off('response', onResponse);
-
       result.urls = this.toObj(bags, pageUrl);
+
       const variants = [];
       for (const m of result.urls.m3u8.slice(0, 5)) {
         const en = await HLSParser.enrich(m);
@@ -777,62 +942,6 @@ class VideoExtractor {
       result.diagnostics = diagnostics;
       return result;
     }
-  }
-
-  async scanDom(page, base) {
-    const html = await page.content();
-    const $ = cheerio.load(html);
-    const out = { m3u8: [], mp4: [], webm: [], mpd: [], other: [] };
-    const push = (src) => {
-      const abs = resolveUrl(base, src);
-      if (!abs) return;
-      const k = classifyMedia(abs) || 'other';
-      out[k]?.push(abs);
-    };
-    $('video, source, [data-src], [data-video], [data-url], [data-stream], [data-file]').each((_, el) => {
-      push($(el).attr('src'));
-      push($(el).attr('data-src'));
-      push($(el).attr('data-video'));
-      push($(el).attr('data-url'));
-      push($(el).attr('data-stream'));
-      push($(el).attr('data-file'));
-    });
-    return out;
-  }
-
-  scanScripts(html) {
-    const out = { m3u8: [], mp4: [], webm: [], mpd: [], other: [] };
-    const rules = [
-      [/(https?:\/\/[^"'\\s<>{}]+?\.m3u8[^"'\\s<>{}]*)/gi, 'm3u8'],
-      [/(https?:\/\/[^"'\\s<>{}]+?\.mp4[^"'\\s<>{}]*)/gi, 'mp4'],
-      [/(https?:\/\/[^"'\\s<>{}]+?\.webm[^"'\\s<>{}]*)/gi, 'webm'],
-      [/(https?:\/\/[^"'\\s<>{}]+?\.mpd[^"'\\s<>{}]*)/gi, 'mpd']
-    ];
-    for (const [re, key] of rules) {
-      let m;
-      while ((m = re.exec(html)) !== null) out[key].push(m[1]);
-    }
-    return out;
-  }
-
-  async scanFrames(page, base) {
-    const out = { m3u8: [], mp4: [], webm: [], mpd: [], other: [] };
-    for (const frame of page.frames().slice(0, 12)) {
-      try {
-        const html = await frame.content();
-        const $ = cheerio.load(html);
-        $('video, source, [data-src], [data-video]').each((_, el) => {
-          const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-video');
-          const abs = resolveUrl(base, src);
-          if (!abs) return;
-          const k = classifyMedia(abs) || 'other';
-          out[k]?.push(abs);
-        });
-        const scripts = this.scanScripts(html);
-        for (const [k, arr] of Object.entries(scripts)) arr.forEach((u) => out[k]?.push(u));
-      } catch (e) {}
-    }
-    return out;
   }
 }
 
@@ -893,16 +1002,6 @@ class CacheManager {
         return p;
       }
     } catch (e) {}
-    if (db) {
-      try {
-        const doc = await db.collection('cache').findOne({ contentHash: k, expiresAt: { $gt: new Date() } });
-        if (doc) {
-          metrics.cacheHits.labels('l3').inc();
-          this._set(k, doc.data);
-          return doc.data;
-        }
-      } catch (e) {}
-    }
     return null;
   }
   async set(url, data, quality = 'auto', deep = false, ttl = 259200) {
@@ -911,24 +1010,6 @@ class CacheManager {
     try {
       await redis.setex(`cache:${k}`, Math.min(ttl, 86400), JSON.stringify(data));
     } catch (e) {}
-    if (db) {
-      try {
-        await db.collection('cache').updateOne(
-          { contentHash: k },
-          {
-            $set: {
-              contentHash: k,
-              url,
-              quality,
-              data,
-              expiresAt: new Date(Date.now() + ttl * 1000),
-              createdAt: new Date()
-            }
-          },
-          { upsert: true }
-        );
-      } catch (e) {}
-    }
   }
 }
 const cacheManager = new CacheManager();
@@ -1008,10 +1089,11 @@ app.use((req, res, next) => {
   const t0 = Date.now();
   res.on('finish', () => {
     try {
-      metrics.httpDuration.labels(req.method, req.route?.path || req.path, res.statusCode).observe((Date.now() - t0) / 1000);
+      metrics.httpDuration
+        .labels(req.method, req.route?.path || req.path, res.statusCode)
+        .observe((Date.now() - t0) / 1000);
     } catch (e) {}
   });
-  req.requestId = uuidv4();
   next();
 });
 
@@ -1049,9 +1131,15 @@ app.get('/api/v1/health', (req, res) => {
   res.json({
     status: 'healthy',
     name: 'Vd-Pro',
-    version: '3.1.0',
+    version: '3.2.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
+    search: {
+      ddgApi: true,
+      wikipedia: true,
+      tmdb: !!TMDB_API_KEY,
+      browserFallback: true
+    },
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
@@ -1065,8 +1153,10 @@ app.get('/api/v1/metrics', (req, res) => {
 app.post('/api/v1/auth/register', async (req, res) => {
   try {
     const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ success: false, error: 'Missing fields', code: 'MISSING_FIELDS' });
-    if (String(password).length < 8) return res.status(400).json({ success: false, error: 'Weak password', code: 'WEAK_PASSWORD' });
+    if (!email || !password)
+      return res.status(400).json({ success: false, error: 'Missing fields', code: 'MISSING_FIELDS' });
+    if (String(password).length < 8)
+      return res.status(400).json({ success: false, error: 'Weak password', code: 'WEAK_PASSWORD' });
     if (!db) return res.status(503).json({ success: false, error: 'DB unavailable', code: 'DB_UNAVAILABLE' });
     const normalized = String(email).trim().toLowerCase();
     if (await db.collection('users').findOne({ email: normalized })) {
@@ -1098,7 +1188,8 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
     const cached = await cacheManager.get(url, quality, deepFlag);
     if (cached) return res.json({ success: true, fromCache: true, ...cached });
     const flightKey = `ex:${url}::${quality}::${deepFlag ? 1 : 0}`;
-    if (singleFlight.get(flightKey)) return res.status(202).json({ success: true, message: 'Processing', dedup: true });
+    if (singleFlight.get(flightKey))
+      return res.status(202).json({ success: true, message: 'Processing', dedup: true });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     const job = await extractionQueue.add(
       { type: 'extract', url, userId, quality, deep: deepFlag },
@@ -1118,11 +1209,6 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
   }
 });
 
-/**
- * Search by name
- * GET /api/v1/search?q=Silo
- * GET /api/v1/search?q=Silo&extract=1  → search then extract top match
- */
 app.get('/api/v1/search', verifyToken, async (req, res) => {
   try {
     const { q, extract, quality = 'auto', deep } = req.query;
@@ -1142,7 +1228,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
       {
         attempts: 2,
         backoff: { type: 'exponential', delay: 2000 },
-        timeout: doExtract ? EXTRACT_TIMEOUT_MS + 60000 : 90000,
+        timeout: doExtract ? EXTRACT_TIMEOUT_MS + 60000 : 60000,
         removeOnComplete: 50,
         removeOnFail: 20
       }
@@ -1205,10 +1291,10 @@ app.use(
   swaggerUi.serve,
   swaggerUi.setup({
     openapi: '3.0.0',
-    info: { title: 'Vd-Pro API', version: '3.1.0' },
+    info: { title: 'Vd-Pro API', version: '3.2.0' },
     paths: {
+      '/search': { get: { summary: 'Search by name (API-first)' } },
       '/extract': { get: { summary: 'Extract from URL' } },
-      '/search': { get: { summary: 'Search by name; ?extract=1 to extract top result' } },
       '/jobs/{id}': { get: { summary: 'Job status' } }
     }
   })
@@ -1218,27 +1304,30 @@ extractionQueue.process(4, async (job) => {
   let ctx = null;
   let proxy = null;
   try {
-    proxy = proxyManager.getNext();
-    ctx = await browserPool.get(proxy);
-    const { page } = ctx;
     const userId = job.data.userId;
+    const sp = new SearchProvider();
 
-    // ── Search only ──
     if (job.data.type === 'search') {
-      const sp = new SearchProvider();
-      const results = await sp.searchByName(job.data.search, page);
+      let results = await sp.searchByName(job.data.search, null);
+      if (results.length < 2) {
+        proxy = proxyManager.getNext();
+        ctx = await browserPool.get(proxy);
+        results = await sp.searchByName(job.data.search, ctx.page);
+      }
       return {
         success: results.length > 0,
         query: job.data.search,
         results,
         count: results.length,
+        providers: ['ddg-api', 'wikipedia', TMDB_API_KEY ? 'tmdb' : null, 'bing-fallback'].filter(Boolean),
         message: results.length ? undefined : 'No matching results for this name'
       };
     }
 
-    // ── Search then extract top match ──
     if (job.data.type === 'search_extract') {
-      const sp = new SearchProvider();
+      proxy = proxyManager.getNext();
+      ctx = await browserPool.get(proxy);
+      const page = ctx.page;
       const results = await sp.searchByName(job.data.search, page);
       if (!results.length) {
         return {
@@ -1250,10 +1339,11 @@ extractionQueue.process(4, async (job) => {
           errorCode: 'NO_SEARCH_RESULTS'
         };
       }
-      const top = results[0];
+      const preferred =
+        results.find((r) => !/wikipedia\.org|themoviedb\.org/i.test(r.url)) || results[0];
       const extractor = new VideoExtractor();
       const extraction = await circuitBreaker.run(() =>
-        extractor.extract(top.url, page, userId, {
+        extractor.extract(preferred.url, page, userId, {
           quality: job.data.quality || 'auto',
           deep: job.data.deep
         })
@@ -1261,15 +1351,17 @@ extractionQueue.process(4, async (job) => {
       return {
         success: !!extraction.success,
         query: job.data.search,
-        matchedName: top.name,
-        matchedUrl: top.url,
-        matchScore: top.matchScore,
-        searchResults: results.slice(0, 8),
+        matchedName: preferred.name,
+        matchedUrl: preferred.url,
+        matchScore: preferred.matchScore,
+        searchResults: results.slice(0, 10),
         extraction
       };
     }
 
-    // ── Direct extract ──
+    proxy = proxyManager.getNext();
+    ctx = await browserPool.get(proxy);
+    const { page } = ctx;
     const extractor = new VideoExtractor();
     const result = await circuitBreaker.run(() =>
       extractor.extract(job.data.url, page, userId, {
@@ -1279,10 +1371,10 @@ extractionQueue.process(4, async (job) => {
     );
 
     metrics.extractionDuration.labels(result.success ? 'success' : 'failure').observe(result.duration || 0);
-
     if (result.success) {
       metrics.sourceSuccess.inc();
       proxyManager.success(proxy);
+      await cacheManager.set(job.data.url, result, job.data.quality || 'auto', !!job.data.deep);
       if (db) {
         try {
           await db.collection('extractions').updateOne(
@@ -1293,48 +1385,22 @@ extractionQueue.process(4, async (job) => {
                 userId: ObjectId.isValid(userId) ? new ObjectId(userId) : userId,
                 url: job.data.url,
                 result,
-                createdAt: new Date(),
-                expiresAt: new Date(Date.now() + 7 * 86400000)
+                createdAt: new Date()
               }
             },
             { upsert: true }
           );
-          await cacheManager.set(job.data.url, result, job.data.quality || 'auto', !!job.data.deep);
         } catch (e) {}
       }
     } else {
       metrics.sourceFailure.labels(result.errorCode || 'unknown').inc();
       proxyManager.fail(proxy);
-      if (db) {
-        try {
-          await db.collection('diagnostics').insertOne({
-            jobId: String(job.id),
-            url: job.data.url,
-            error: result.error,
-            errorCode: result.errorCode,
-            diagnostics: result.diagnostics,
-            createdAt: new Date()
-          });
-        } catch (e) {}
-      }
     }
-
     singleFlight.del(`ex:${job.data.url}::${job.data.quality || 'auto'}::${job.data.deep ? 1 : 0}`);
     return result;
   } catch (error) {
     logger.error({ jobId: job.id, error: error.message }, 'Job failed');
     proxyManager.fail(proxy);
-    if (db) {
-      try {
-        await db.collection('failed_jobs').insertOne({
-          jobId: String(job.id),
-          jobData: job.data,
-          error: error.message,
-          attempts: job.attemptsMade,
-          createdAt: new Date()
-        });
-      } catch (e) {}
-    }
     if (/timeout|net::|Circuit breaker|Target closed/i.test(error.message || '')) throw error;
     return { success: false, error: error.message, errorCode: 'JOB_EXCEPTION' };
   } finally {
@@ -1394,24 +1460,21 @@ process.on('SIGINT', shutdown);
 
 (async () => {
   try {
-    logger.info('🚀 Vd-Pro v3.1 starting...');
-    const ok = await connectDatabase();
-    if (!ok) logger.warn('MongoDB offline');
+    logger.info('🚀 Vd-Pro v3.2 starting...');
+    await connectDatabase();
     browserPool = new BrowserPool(2);
     await browserPool.init();
     httpServer.listen(PORT, '0.0.0.0', () => {
-      logger.info(`Vd-Pro on :${PORT}`);
+      logger.info(`Vd-Pro v3.2 on :${PORT}`);
       console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║  VD-PRO v3.1                                             ║
-║  ✓ Search by name (ranked by title match)                ║
-║  ✓ search?extract=1 → find name then extract             ║
-║  ✓ Network + DOM + frames + Play                         ║
-║  ✓ HLS variants + quality                                ║
-║  ✓ Job ownership · JWT · SSRF                            ║
-║  GET /api/v1/search?q=NAME                               ║
-║  GET /api/v1/search?q=NAME&extract=1&quality=1080p       ║
-║  GET /api/v1/extract?url=&deep=1                         ║
+║  VD-PRO v3.2 — SEARCH FIXED                              ║
+║  ✓ DuckDuckGo Instant Answer API                         ║
+║  ✓ Wikipedia OpenSearch (EN + AR)                        ║
+║  ✓ TMDB (optional TMDB_API_KEY)                          ║
+║  ✓ Bing browser fallback                                 ║
+║  GET /api/v1/search?q=Silo                               ║
+║  GET /api/v1/search?q=Silo&extract=1                     ║
 ╚══════════════════════════════════════════════════════════╝
 `);
     });
