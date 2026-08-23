@@ -1730,7 +1730,7 @@ class SearchProvider {
     const informationPenalty =
       /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram/.test(d) ? 0.25 : 0;
     const score = Math.max(0, rawScore + watchBoost - informationPenalty);
-    const candidateClass = infoCandidate ? 'info' : watchBoost > 0 ? 'watch' : 'unknown';
+    const candidateClass = infoCandidate ? 'info' : 'watch';
     const prev = map.get(url);
     if (!prev || score > prev.score) {
       map.set(url, {
@@ -1785,6 +1785,42 @@ class SearchProvider {
       }
     } catch (e) {
       logger.warn({ error: e.message }, 'DDG API failed');
+    }
+  }
+
+  async searchDuckDuckGoHtml(query, map) {
+    try {
+      const { data } = await httpClient.get('https://html.duckduckgo.com/html/', {
+        params: { q: query },
+        timeout: 12000,
+        headers: { Accept: 'text/html,application/xhtml+xml' }
+      });
+      const $ = cheerio.load(String(data || ''));
+      $('.result').each((_, el) => {
+        const a = $(el).find('a.result__a').first();
+        const href = a.attr('href');
+        const title = a.text().trim();
+        const snippet = $(el).find('.result__snippet').text().trim();
+        if (!href || !title) return;
+        let url = href;
+        try {
+          const parsed = new URLParser(href);
+          const uddg = parsed.searchParams.get('uddg');
+          if (uddg) url = decodeURIComponent(uddg);
+        } catch (e) {}
+        if (!/^https?:\/\//i.test(url)) return;
+        this.add(map, {
+          name: title,
+          title: snippet ? title + ' — ' + snippet : title,
+          url,
+          source: 'ddg-html',
+          query,
+          boost: 0.1,
+          overview: snippet || null
+        });
+      });
+    } catch (e) {
+      logger.warn({ error: e.message }, 'DDG HTML search failed');
     }
   }
 
@@ -1877,10 +1913,14 @@ class SearchProvider {
     const q = String(query || '').trim();
     if (!q) return [];
     const map = new Map();
-    const watchQuery = '"' + q + '" (watch OR stream OR episode OR "full movie")';
+    const watchQuery = '"' + q + '" watch stream episode movie series';
+    const arabicWatchQuery = q + ' مشاهدة فيلم مسلسل حلقة';
     await Promise.all([
       this.searchDuckDuckGoAPI(q, map),
       this.searchDuckDuckGoAPI(watchQuery, map),
+      this.searchDuckDuckGoHtml(q, map),
+      this.searchDuckDuckGoHtml(watchQuery, map),
+      this.searchDuckDuckGoHtml(arabicWatchQuery, map),
       this.searchWikipedia(q, map),
       this.searchTMDB(q, map),
       this.searchOMDb(q, map)
@@ -2103,9 +2143,13 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
     const flightKey = 'ex:' + url + '::' + quality + '::' + (deepFlag ? 1 : 0);
     if (singleFlight.get(flightKey)) return res.status(202).json({ success: true, message: 'Processing', dedup: true });
     const userId = req.user._id?.toString?.() || String(req.user._id);
-    const job = await extractionQueue.add(
-      { type: 'extract', url, userId, quality, deep: deepFlag },
-      { timeout: HARD_EXTRACT_MS + 20000, attempts: 2 }
+    const job = await withTimeout(
+      extractionQueue.add(
+        { type: 'extract', url, userId, quality, deep: deepFlag },
+        { timeout: HARD_EXTRACT_MS + 20000, attempts: 2 }
+      ),
+      10000,
+      'QUEUE_ADD_TIMEOUT'
     );
     singleFlight.set(flightKey, job.finished().catch(() => null));
     res.status(202).json({ success: true, jobId: job.id, statusUrl: '/api/v1/jobs/' + job.id });
@@ -2120,15 +2164,19 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
     if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     const doExtract = extract === '1' || extract === 'true';
-    const job = await extractionQueue.add(
-      {
-        type: doExtract ? 'search_extract' : 'search',
-        search: String(q).trim(),
-        userId,
-        quality,
-        deep: deep === '1' || deep === 'true'
-      },
-      { timeout: doExtract ? HARD_EXTRACT_MS + 30000 : HARD_SEARCH_MS + 10000, attempts: 2 }
+    const job = await withTimeout(
+      extractionQueue.add(
+        {
+          type: doExtract ? 'search_extract' : 'search',
+          search: String(q).trim(),
+          userId,
+          quality,
+          deep: deep === '1' || deep === 'true'
+        },
+        { timeout: doExtract ? HARD_EXTRACT_MS + 30000 : HARD_SEARCH_MS + 10000, attempts: 2 }
+      ),
+      10000,
+      'QUEUE_ADD_TIMEOUT'
     );
     res.status(202).json({
       success: true,
@@ -2144,7 +2192,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
 
 app.get('/api/v1/jobs/:jobId', verifyToken, async (req, res) => {
   try {
-    const job = await extractionQueue.getJob(req.params.jobId);
+    const job = await withTimeout(extractionQueue.getJob(req.params.jobId), 8000, 'QUEUE_STATUS_TIMEOUT');
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     if (job.data && job.data.userId && String(job.data.userId) !== userId) {
@@ -2164,7 +2212,12 @@ app.get('/api/v1/jobs/:jobId', verifyToken, async (req, res) => {
       failedReason: state === 'failed' ? job.failedReason || null : null
     });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    const queueError = /QUEUE_(?:ADD|STATUS)_TIMEOUT|Redis|connection|timeout/i.test(String(e.message || ''));
+    res.status(queueError ? 503 : 500).json({
+      success: false,
+      error: queueError ? 'Queue unavailable' : e.message,
+      code: queueError ? 'QUEUE_UNAVAILABLE' : 'JOB_STATUS_ERROR'
+    });
   }
 });
 
@@ -2296,6 +2349,9 @@ async function processExtractionJob(job) {
   } catch (error) {
     logger.error({ jobId: job.id, error: error.message }, 'Job failed');
     proxyManager.fail(proxy);
+    if (job?.data?.url) {
+      singleFlight.del('ex:' + job.data.url + '::' + (job.data.quality || 'auto') + '::' + (job.data.deep ? 1 : 0));
+    }
     const code = error.code || (error.message === 'EXTRACTION_TIMEOUT' ? 'EXTRACTION_TIMEOUT' : 'JOB_EXCEPTION');
     return { success: false, error: error.message, errorCode: code, duration: 0 };
   } finally {
