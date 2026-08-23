@@ -1403,6 +1403,8 @@ class SingleFlight {
 }
 const singleFlight = new SingleFlight();
 
+const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
+
 const extractionQueue = new Queue('vd-pro-v41', REDIS_URL, {
   settings: {
     stalledInterval: 20000,
@@ -1596,7 +1598,7 @@ app.use(
   swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.1.0' } })
 );
 
-extractionQueue.process(2, async (job) => {
+async function processExtractionJob(job) {
   let ctx = null;
   let proxy = null;
   try {
@@ -1710,8 +1712,21 @@ extractionQueue.process(2, async (job) => {
   } finally {
     if (ctx) browserPool.release(ctx);
   }
-});
+}
 
+extractionQueue.process(2, async (job) => {
+  try {
+    return await withTimeout(processExtractionJob(job), JOB_PROCESS_TIMEOUT_MS, 'JOB_PROCESS_TIMEOUT');
+  } catch (error) {
+    logger.error({ jobId: job.id, error: error.message }, 'Job hard timeout');
+    return {
+      success: false,
+      error: 'Job exceeded the maximum processing time',
+      errorCode: error.code || 'JOB_PROCESS_TIMEOUT',
+      duration: JOB_PROCESS_TIMEOUT_MS / 1000
+    };
+  }
+});
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
 const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
 const watchdogTimer = setInterval(async () => {
