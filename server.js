@@ -216,9 +216,18 @@ function extractUrlCandidates(value = '', base = '') {
   return [...found];
 }
 
+function isRejectedMediaUrl(url = '') {
+  return /doubleclick\.net|googlesyndication\.com|google-analytics\.com|googletagmanager\.com|analytics|tracking|tracker|pixel|beacon|adservice|adsystem|advert|banner|\/ads?(?:\/|\?|$)/i.test(String(url || ''));
+}
+
+function isMediaSegment(url = '') {
+  return /\.(m4s|ts)(?:\?|#|$)/i.test(String(url || '')) || /\/(?:segment|chunk|fragments?)(?:\/|\?|$)/i.test(String(url || ''));
+}
+
 function looksLikeMedia(url = '', ct = '') {
   const u = String(url || '').toLowerCase();
   const c = String(ct || '').toLowerCase();
+  if (isRejectedMediaUrl(u)) return false;
   if (/\.(m3u8|mp4|webm|mpd|m4s|ts|m4v|mov|mkv|avi|flv|ogv|ogg|aac|mp3|wav)(\?|#|$)/i.test(u)) return true;
   if (/\/hls\/|\/dash\/|\/manifest(?:\/|\?|$)|playlist|master\.json|videoplayback|\bsegment\b|\bchunk\b/i.test(u)) return true;
   if (c.includes('mpegurl') || c.includes('dash+xml') || c.includes('vnd.apple') || c.startsWith('video/') || c.startsWith('audio/') || c.includes('octet-stream')) return true;
@@ -230,6 +239,7 @@ function classifyMedia(url = '', ct = '') {
   const c = String(ct || '').toLowerCase();
   if (u.includes('.m3u8') || c.includes('mpegurl') || c.includes('vnd.apple')) return 'm3u8';
   if (u.includes('.mpd') || c.includes('dash+xml')) return 'mpd';
+  if (isMediaSegment(u)) return 'segment';
   if (u.includes('.webm') || c.includes('webm')) return 'webm';
   if (u.includes('.mp4') || c.includes('mp4') || c.startsWith('video/')) return 'mp4';
   if (/\.(m4v|mov|mkv|avi|flv|ogv|ogg|aac|mp3|wav)(?:\?|#|$)/i.test(u) || c.startsWith('audio/')) return 'other';
@@ -244,6 +254,30 @@ function looksLikeSubtitle(url = '', ct = '') {
   if (c.includes('text/vtt') || c.includes('application/x-subrip')) return true;
   if (/subtitle|captions|\.vtt|\/subs?\//i.test(u)) return true;
   return false;
+}
+
+function extractLinkMeta(url, referer = null) {
+  const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null };
+  try {
+    const parsed = new URLParser(url);
+    const keys = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at', 'valid_until'];
+    let raw = null;
+    for (const key of keys) {
+      raw = parsed.searchParams.get(key);
+      if (raw) break;
+    }
+    if (raw) {
+      const numeric = Number(raw);
+      const date = Number.isFinite(numeric)
+        ? new Date(numeric < 1e12 ? numeric * 1000 : numeric)
+        : new Date(raw);
+      if (!Number.isNaN(date.getTime())) {
+        meta.expiresAt = date.toISOString();
+        meta.ttlSeconds = Math.max(0, Math.floor((date.getTime() - Date.now()) / 1000));
+      }
+    }
+  } catch (e) {}
+  return meta;
 }
 
 function rankScore(url) {
@@ -639,6 +673,7 @@ class VideoExtractor {
       mp4: new Set(),
       webm: new Set(),
       mpd: new Set(),
+      segment: new Set(),
       other: new Set(),
       subtitles: new Set()
     };
@@ -646,7 +681,7 @@ class VideoExtractor {
 
   add(bags, url, ct = '') {
     if (!url || typeof url !== 'string') return;
-    if (url.startsWith('blob:')) return;
+    if (url.startsWith('blob:') || isRejectedMediaUrl(url)) return;
     if (looksLikeSubtitle(url, ct)) {
       bags.subtitles.add(url);
       return;
@@ -664,6 +699,7 @@ class VideoExtractor {
       mp4: abs(bags.mp4),
       webm: abs(bags.webm),
       mpd: abs(bags.mpd),
+      segment: abs(bags.segment),
       other: abs(bags.other),
       subtitles: abs(bags.subtitles)
     };
@@ -733,7 +769,7 @@ class VideoExtractor {
     const result = {
       success: false,
       primaryUrl: null,
-      urls: { m3u8: [], mp4: [], webm: [], mpd: [], other: [] },
+      urls: { m3u8: [], mp4: [], webm: [], mpd: [], segment: [], other: [] },
       variants: [],
       subtitles: [],
       qualities: [],
@@ -966,7 +1002,7 @@ class VideoExtractor {
     }
 
     variants.sort((a, b) => rankScore(b.url) - rankScore(a.url));
-    result.variants = variants.slice(0, 20);
+      result.variants = variants.slice(0, 20);
     result.subtitles = subtitles.slice(0, 15);
     result.qualities = [...new Set(result.variants.map((v) => v.quality).filter(Boolean))];
 
@@ -978,7 +1014,8 @@ class VideoExtractor {
       result.error = null;
       result.errorCode = null;
       try {
-        const v = await ResultValidator.validate(result.primaryUrl);
+        result.linkMeta = extractLinkMeta(result.primaryUrl, pageUrl);
+        const v = await ResultValidator.validate(result.primaryUrl, pageUrl);
         result.validated = v.valid;
         if (!v.valid) result.validationReason = v.reason;
       } catch (e) {
@@ -1083,7 +1120,7 @@ class VideoExtractor {
 }
 
 class ResultValidator {
-  static async validate(url) {
+  static async validate(url, referer = null) {
     if (!url) return { valid: false, reason: 'NO_URL' };
     try {
       new URLParser(url);
@@ -1098,7 +1135,8 @@ class ResultValidator {
         validateStatus: () => true,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Range: 'bytes=0-8192'
+          Range: 'bytes=0-8192',
+          ...(referer ? { Referer: referer, Origin: new URLParser(referer).origin } : {})
         }
       });
       if (res.status < 200 || res.status >= 400) return { valid: false, reason: 'INVALID_STATUS' };
@@ -1113,10 +1151,18 @@ class ResultValidator {
 }
 
 class SearchProvider {
+  isInfoCandidate(url = '', source = '') {
+    const u = String(url || '').toLowerCase();
+    const s = String(source || '').toLowerCase();
+    return /wikipedia\.org|imdb\.com|themoviedb\.org|rottentomatoes\.com|fandom\.com|facebook\.com|instagram\.com|youtube\.com/.test(u) ||
+      /wikipedia|tmdb|imdb|omdb/.test(s) || /\/wiki\/|\/search(?:\/|\?|$)|\/person\//.test(u);
+  }
+
   add(map, item) {
     const url = item.url;
     if (!url || !/^https?:\/\//i.test(url)) return;
     if (/duckduckgo\.com|google\.[a-z.]+\/search|bing\.com\/search|wikipedia\.org\/w\/api/i.test(url)) return;
+    const infoCandidate = this.isInfoCandidate(url, item.source);
     const rawScore =
       (item.score != null ? item.score : titleSimilarity(item.query || '', item.title || item.name || '')) +
       (item.boost || 0);
@@ -1124,6 +1170,7 @@ class SearchProvider {
     const watchBoost = /watch|stream|online|episode|season|movie|series|film|play|embed|player|video/.test(descriptor) ? 0.12 : 0;
     const informationPenalty = /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram|youtube/.test(descriptor) ? 0.2 : 0;
     const score = Math.max(0, rawScore + watchBoost - informationPenalty);
+    const candidateClass = infoCandidate ? 'info' : (watchBoost > 0 ? 'watch' : 'unknown');
     const prev = map.get(url);
     if (!prev || score > prev.score) {
       map.set(url, {
@@ -1138,6 +1185,7 @@ class SearchProvider {
         imdbId: item.imdbId || null,
         tmdbId: item.tmdbId || null,
         poster: item.poster || null,
+        candidateClass,
         pageUrl: url
       });
     }
@@ -1270,9 +1318,10 @@ class SearchProvider {
     const q = String(query || '').trim();
     if (!q) return [];
     const map = new Map();
+    const watchQuery = `"${q}" watch OR stream OR episode`;
     await Promise.all([
       this.searchDuckDuckGoAPI(q, map),
-      this.searchDuckDuckGoAPI(q + ' series', map),
+      this.searchDuckDuckGoAPI(watchQuery, map),
       this.searchWikipedia(q, map),
       this.searchTMDB(q, map),
       this.searchOMDb(q, map)
@@ -1293,7 +1342,8 @@ class SearchProvider {
       overview: r.overview,
       imdbId: r.imdbId,
       tmdbId: r.tmdbId,
-      poster: r.poster
+      poster: r.poster,
+      candidateClass: r.candidateClass || 'unknown'
     }));
   }
 }
@@ -1582,8 +1632,20 @@ extractionQueue.process(2, async (job) => {
       if (!results.length) {
         return { success: false, query: job.data.search, results: [], errorCode: 'NO_SEARCH_RESULTS' };
       }
-      const preferred =
-        results.find((r) => !/wikipedia\.org|themoviedb\.org|imdb\.com/i.test(r.url)) || results[0];
+      const searchProvider = new SearchProvider();
+      const infoCandidates = results.filter((r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info');
+      const watchCandidates = results.filter((r) => !searchProvider.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info');
+      const preferred = watchCandidates[0];
+      if (!preferred) {
+        return {
+          success: false,
+          query: job.data.search,
+          watchCandidates: [],
+          infoCandidates,
+          searchResults: results.slice(0, 10),
+          errorCode: 'NO_WATCH_CANDIDATE'
+        };
+      }
       const extraction = await new VideoExtractor().extract(preferred.url, page, userId, {
         quality: job.data.quality,
         deep: job.data.deep
@@ -1594,6 +1656,8 @@ extractionQueue.process(2, async (job) => {
         matchedName: preferred.name,
         matchedUrl: preferred.url,
         pageUrl: preferred.pageUrl || preferred.url,
+        watchCandidates: watchCandidates.slice(0, 10),
+        infoCandidates: infoCandidates.slice(0, 10),
         searchResults: results.slice(0, 10),
         extraction
       };
@@ -1648,6 +1712,28 @@ extractionQueue.process(2, async (job) => {
   }
 });
 
+const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
+const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
+const watchdogTimer = setInterval(async () => {
+  try {
+    const activeJobs = await extractionQueue.getJobs(['active'], 0, 100);
+    const now = Date.now();
+    for (const job of activeJobs) {
+      const startedAt = Number(job.processedOn || job.timestamp || 0);
+      if (!startedAt || now - startedAt <= WATCHDOG_MAX_AGE_MS) continue;
+      try {
+        await job.moveToFailed(new Error('WATCHDOG_TIMEOUT'), true);
+        logger.warn({ jobId: job.id, ageMs: now - startedAt }, 'Watchdog failed stale active job');
+      } catch (e) {
+        logger.warn({ jobId: job.id, error: e.message }, 'Watchdog could not fail stale job');
+      }
+    }
+  } catch (e) {
+    logger.warn({ error: e.message }, 'Watchdog scan failed');
+  }
+}, WATCHDOG_INTERVAL_MS);
+watchdogTimer.unref?.();
+
 const wss = new WebSocketServer({ server: httpServer });
 wss.on('connection', async (ws, req) => {
   let uid = null;
@@ -1684,6 +1770,7 @@ wss.on('connection', async (ws, req) => {
 
 async function shutdown() {
   try {
+    clearInterval(watchdogTimer);
     await new Promise((r) => httpServer.close(r));
     await browserPool?.closeAll();
     await redis.quit();
