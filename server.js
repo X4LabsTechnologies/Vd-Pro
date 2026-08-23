@@ -960,7 +960,7 @@ class VideoExtractor {
     const add = (value) => {
       if (!value || typeof value !== 'string') return;
       const candidates = [value];
-      const decoded = value.replace(/\u002F/g, '/').replace(/\\//g, '/');
+      const decoded = value.replace(/\u002F/g, '/').replace(/\\\//g, '/');
       if (decoded !== value) candidates.push(decoded);
       for (const item of candidates) {
         const matches = item.match(/https?:\/\/[^\s"'<>`\\]+/gi) || [];
