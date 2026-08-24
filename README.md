@@ -1,305 +1,326 @@
-# 🚀 Vd-Pro Video Extraction Platform - Epic Edition v2.0
+# Vd-Pro v4.4.0
 
-Enterprise-grade video extraction platform built with Node.js, Playwright, and modern streaming technologies.
+محرك عام لاكتشاف واستخراج وسائط الفيديو من صفحات الويب باستخدام Node.js وPlaywright. يدعم اكتشاف روابط HLS وDASH وMP4 وWebM، وتحليل الجودات والترجمات، ومراقبة طلبات الشبكة، وفحص DOM وJavaScript وiframes، مع الحفاظ على واجهات API الحالية وعدم إضافة منطق خاص بموقع معيّن.
 
-## ✨ Features
+> **مهم:** يعمل المحرك مع الوسائط التي يكشفها الموقع أو المشغل للمتصفح. لا يفك DRM مثل Widevine أو FairPlay، ولا يحل CAPTCHA أو يتجاوز Cloudflare تلقائيًا. قد تكون بعض الروابط موقعة ومؤقتة وتتطلب Referer أو سياق جلسة.
 
-### Core Features
-- 🎯 **Video Extraction**: Extract video URLs from websites
-- 🔍 **Content Search**: Search for movies/series by name
-- 🎬 **Multi-Format Support**: m3u8, mp4, webm
-- 🎚️ **Quality Filtering**: Select specific quality (720p, 1080p, etc)
+## الحالة الحالية
 
-### Advanced Features
-- 🔐 **Advanced Proxy Management**: Health checks + rotation
-- 🍪 **Session Persistence**: Cookie management + auto-replay
-- 🎭 **Dynamic Stealth**: Anti-detection fingerprinting
-- 🖱️ **Human Interaction**: Natural mouse movement (Bezier curves)
-- ⚡ **Context Pooling**: Efficient browser resource management
-- 📊 **Multi-Strategy Extraction**: 5+ extraction methods
-- 💾 **3-Level Cache**: L1 (Memory) + L2 (Redis) + L3 (MongoDB)
-- 🔄 **Circuit Breaker**: Smart failure handling
-- 📈 **Prometheus Metrics**: Complete monitoring
-- 🔒 **SSRF Protection**: Security validation
-- 🪝 **Webhooks**: Real-time notifications
-- 📱 **WebSocket**: Live job status updates
+| العنصر | الحالة |
+|---|---|
+| الإصدار | `4.4.0` |
+| نقطة التشغيل | `server.js` |
+| قاعدة البيانات | MongoDB اختيارية للتشغيل الأساسي، ومستخدمة للمستخدمين والحفظ عند ضبطها |
+| الطابور | Bull فوق Redis |
+| المتصفح | Playwright Chromium |
+| المصادقة | JWT عبر `Authorization: Bearer TOKEN` |
+| البحث | DuckDuckGo API وDuckDuckGo HTML وBing وWikipedia، مع TMDB وOMDb اختياريًا |
+| التخزين المؤقت | ذاكرة العملية، Redis، وMongoDB عند توفرها |
+| الاختبارات | فحص صياغة Node متاح؛ `npm test` ما زال اختبارًا تمهيديًا |
 
-## 🛠️ Installation
+## المتطلبات والتشغيل المحلي
 
-### Prerequisites
-- Node.js >= 18.0.0
-- MongoDB Atlas account (or local MongoDB)
-- Redis Cloud account (or local Redis)
-- npm or yarn
-
-### Setup Steps
+يتطلب المشروع Node.js 18 أو أحدث. يتطلب Redis وMongoDB عند استخدام الطوابير والتسجيل والتخزين الدائم. ثبّت الاعتمادات ثم شغّل الخادم:
 
 ```bash
-# 1. Clone repository
-git clone <repo-url>
-cd vd-pro
-
-# 2. Install dependencies
 npm install
+npm start
+```
 
-# 3. Configure environment
-cp .env.example .env
-# Edit .env with your credentials
+للتطوير:
 
-# 4. Run development server
+```bash
 npm run dev
+```
 
-# 5. Or production
+للتشغيل الإنتاجي:
+
+```bash
 npm run prod
 ```
 
-## 📝 Environment Variables
+يستمع الخادم افتراضيًا على المنفذ `3000`، أو على المنفذ المحدد في المتغير `PORT`.
 
-```bash
-# Server
+## إعداد البيئة
+
+انسخ `.env.example` إلى `.env` واملأ القيم المناسبة. في بيئة الإنتاج يجب أن يكون `JWT_SECRET` موجودًا وطوله 32 حرفًا على الأقل.
+
+```env
 NODE_ENV=production
 PORT=3000
-
-# Security
-JWT_SECRET=your-secret-key-here
-
-# Database
-MONGODB_URL=mongodb+srv://user:pass@host/database?retryWrites=true&w=majority
-
-# Cache
-REDIS_URL=redis://user:pass@host:port
-
-# Proxies (optional)
-PROXIES=http://proxy1:8080,http://proxy2:8080
-
-# Logging
-LOG_LEVEL=info
+JWT_SECRET=ضع_سرًا_عشوائيًا_طويلًا_هنا
+MONGODB_URL=mongodb+srv://USER:PASSWORD@HOST/vd-pro
+REDIS_URL=redis://default:PASSWORD@HOST:PORT
 ```
 
-## 📊 API Endpoints
+### الإعدادات الاختيارية
 
-### Health & Status
-```bash
-GET /api/v1/health              # Health check
-GET /api/v1/metrics             # Prometheus metrics
-GET /api/v1/proxy-status        # Proxy status
+| المتغير | الافتراضي | الاستخدام |
+|---|---:|---|
+| `TMDB_API_KEY` | فارغ | تحسين البحث عبر TMDB |
+| `OMDB_API_KEY` | فارغ | إضافة نتائج IMDb/OMDb إلى البحث بالاسم |
+| `PROXIES` | فارغ | قائمة بروكسيات مفصولة بفواصل |
+| `PROXY_URL` | فارغ | بروكسي عام واحد بصيغة URL |
+| `VD_PROXY_URL` | فارغ | اسم بديل لبروكسي واحد |
+| `VD_PROXY_URLS` | فارغ | اسم بديل لقائمة بروكسيات |
+| `BROWSER_POOL_COUNT` | `1` | عدد عمليات Chromium |
+| `BROWSER_CONTEXTS_PER_POOL` | `2` | عدد سياقات المتصفح لكل عملية |
+| `HARD_EXTRACT_MS` | `110000` | الحد الأقصى لعملية الاستخراج بالميلي ثانية |
+| `HARD_SEARCH_MS` | `30000` | الحد الأقصى للبحث بالميلي ثانية |
+| `NAV_TIMEOUT_MS` | `45000` | مهلة فتح الصفحة بالميلي ثانية |
+| `WATCHDOG_INTERVAL_MS` | `15000` | فترة مراقبة المهام العالقة |
+| `ALLOWED_ORIGINS` | فارغ | نطاقات CORS مفصولة بفواصل |
+| `LOG_LEVEL` | `info` | مستوى سجل التشغيل |
+
+مثال للإعدادات الاختيارية:
+
+```env
+TMDB_API_KEY=your_tmdb_api_key
+OMDB_API_KEY=your_omdb_api_key
+PROXY_URL=http://user:pass@host:port
+BROWSER_POOL_COUNT=1
+BROWSER_CONTEXTS_PER_POOL=2
 ```
 
-### Authentication
-```bash
-POST /api/v1/auth/register      # Register user
+لا يضيف ضبط البروكسي أي تجاوز للحماية؛ هو مسار اختياري لتوجيه جلسة المتصفح عندما تكون قيمة بروكسي صالحة متاحة. لا تضع الأسرار داخل المستودع.
+
+## تشغيل Render
+
+يمكن تشغيل المشروع كـ Web Service على Render باستخدام:
+
+```text
+Build Command: npm install
+Start Command: npm start
 ```
 
-Body:
+يستمع التطبيق على `0.0.0.0` ويستخدم متغير `PORT` الذي يوفره Render. يبدأ HTTP مبكرًا أثناء تجهيز MongoDB وChromium في الخلفية، لذلك يمكن لنقطة الصحة الاستجابة أثناء cold start. تكون الخدمة جاهزة للاستخراج عندما يكون الحقل `ready` مساويًا لـ `true`.
+
+اضبط المتغيرات التالية في Render:
+
+```env
+JWT_SECRET=سر_إنتاجي_طويل
+MONGODB_URL=رابط_MongoDB
+REDIS_URL=رابط_Redis
+```
+
+يمكن ضبط `TMDB_API_KEY` و`OMDB_API_KEY` و`PROXIES` اختياريًا. إذا لم يتم ضبط OMDb أو البروكسيات فسيظهر ذلك في نقطة الصحة، مع استمرار عمل بقية الوظائف.
+
+## نقاط API الحالية
+
+جميع النقاط التالية، باستثناء health وregister، تحتاج إلى رأس المصادقة:
+
+```http
+Authorization: Bearer YOUR_TOKEN
+```
+
+### فحص الصحة
+
+```http
+GET /api/v1/health
+```
+
+لا تتطلب هذه النقطة مصادقة. تعيد حالة MongoDB وRedis، الإصدار، الجاهزية، المهلات، موفري البحث، وحالة إعداد البروكسي.
+
+مثال:
+
+```json
+{
+  "status": "healthy",
+  "ready": true,
+  "name": "Vd-Pro",
+  "version": "4.4.0",
+  "redis": "ready",
+  "mongodb": "connected",
+  "searchProviders": {
+    "ddgApi": true,
+    "wikipedia": true,
+    "tmdb": false,
+    "omdbImdb": false
+  },
+  "proxy": {
+    "configured": false,
+    "count": 0
+  }
+}
+```
+
+أثناء cold start قد تكون قيمة `ready` مساوية لـ `false` مع بقاء HTTP متاحًا. يجب الانتظار حتى تصبح `ready: true` قبل إرسال مهام استخراج جديدة.
+
+### تسجيل مستخدم
+
+```http
+POST /api/v1/auth/register
+Content-Type: application/json
+```
+
+الطلب:
+
 ```json
 {
   "email": "user@example.com",
-  "password": "password123",
-  "plan": "free"
+  "password": "password123"
 }
 ```
 
-Response:
+يعيد الطلب `apiKey` و`token` و`plan` عند نجاح التسجيل. يجب أن تكون كلمة المرور بطول 8 أحرف على الأقل.
+
+### استخراج فيديو من رابط صفحة
+
+```http
+GET /api/v1/extract?url=PAGE_URL&quality=auto&deep=true
+Authorization: Bearer YOUR_TOKEN
+```
+
+المعاملات هي `url`، و`quality` مثل `auto` أو `1080p` أو `720p`، و`deep=true` لتفعيل جولات أعمق من التفاعل والفحص. يعيد الطلب مهمة غير متزامنة:
+
 ```json
 {
   "success": true,
-  "apiKey": "...",
-  "token": "...",
-  "plan": "free"
+  "jobId": "JOB_ID",
+  "statusUrl": "/api/v1/jobs/JOB_ID"
 }
 ```
 
-### Video Extraction
-```bash
-GET /api/v1/extract?url=<URL>&quality=<quality>
+### البحث بالاسم
+
+```http
+GET /api/v1/search?q=اسم%20الفيلم&extract=false&quality=auto&deep=false
+Authorization: Bearer YOUR_TOKEN
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "jobId": "123",
-  "statusUrl": "/api/v1/jobs/123"
-}
+بدون `extract=true` يعيد البحث النتائج ويفصل بين `watchCandidates` و`infoCandidates`. عند استخدام `extract=true` يحاول استخراج الوسائط من أفضل مرشح مشاهدة ويضع النتيجة داخل `extraction`.
+
+### متابعة المهمة
+
+```http
+GET /api/v1/jobs/JOB_ID
+Authorization: Bearer YOUR_TOKEN
 ```
 
-### Search
-```bash
-GET /api/v1/search?q=<query>&quality=<quality>
+قد تكون الحالة `waiting` أو `active` أو `completed` أو `failed`. عند اكتمال المهمة توجد النتيجة داخل `result`. إذا تعذر الوصول إلى Redis تعيد النقطة خطأ واضحًا مثل `QUEUE_UNAVAILABLE` بدل تعليق الطلب بلا نهاية.
+
+### حالة البروكسيات
+
+```http
+GET /api/v1/proxy-status
+Authorization: Bearer YOUR_TOKEN
 ```
 
-### Job Management
-```bash
-GET /api/v1/jobs/:jobId         # Get job status
-POST /api/v1/jobs/:jobId/retry  # Retry failed job
-```
+تعيد هذه النقطة حالة البروكسيات وعدد النجاحات والإخفاقات، مع إخفاء اسم المستخدم وكلمة المرور من العناوين المعروضة.
 
-### Webhooks
-```bash
-POST /api/v1/webhooks           # Create webhook
-```
+## أمثلة الاستخدام
 
-Body:
-```json
-{
-  "url": "https://your-endpoint.com/webhook",
-  "events": ["extraction.complete", "extraction.failed"]
-}
-```
+### التسجيل والحصول على token
 
-## 💻 Usage Examples
-
-### Register User
 ```bash
 curl -X POST http://localhost:3000/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
-    "password": "password123",
-    "plan": "free"
+    "password": "password123"
   }'
 ```
 
-### Extract Video
+### بدء الاستخراج
+
 ```bash
-curl "http://localhost:3000/api/v1/extract?url=https://example.com/video&quality=1080p" \
+curl "http://localhost:3000/api/v1/extract?url=https%3A%2F%2Fexample.com%2Fvideo&quality=auto&deep=true" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-### Search Content
+### البحث بالاسم
+
 ```bash
-curl "http://localhost:3000/api/v1/search?q=Breaking%20Bad&quality=720p" \
+curl "http://localhost:3000/api/v1/search?q=Breaking%20Bad&extract=false" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-### Check Job Status
+### متابعة المهمة
+
 ```bash
 curl "http://localhost:3000/api/v1/jobs/JOB_ID" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-### Setup Webhook
+## شكل نتيجة الاستخراج
+
+تحافظ نتيجة الاستخراج على الحقول العامة التالية:
+
+| الحقل | الوصف |
+|---|---|
+| `success` | يساوي `true` عندما يوجد مرشح صالح تم التحقق منه |
+| `primaryUrl` | الرابط الأساسي المختار بعد ترتيب المرشحين والتحقق منهم |
+| `urls` | الروابط المصنفة إلى `m3u8` و`mp4` و`webm` و`mpd` و`segment` و`other` |
+| `variants` | نسخ الفيديو والجودات ومعدل النقل والدقة ونوع الوسيط وحالة التحقق |
+| `subtitles` | روابط الترجمات المكتشفة من HLS وDASH وHTML وطلبات الشبكة |
+| `qualities` | قائمة تسميات الجودات المكتشفة |
+| `validated` | يوضح هل تم التحقق من الرابط الأساسي |
+| `linkMeta` | معلومات Referer وTTL والتوقيع المحتمل للرابط |
+| `diagnostics` | معلومات مثل عدد الطلبات والإطارات وحالة MSE وDRM وCAPTCHA |
+| `errorCode` | رمز واضح عند عدم نجاح الاستخراج |
+
+يدعم المحرك اكتشاف HLS وDASH، بما في ذلك manifests ونسخ الدقة والترجمات، كما يلتقط روابط الوسائط من HTML وJavaScript وتهيئات المشغلات وطلبات XHR/fetch وiframes المتداخلة وShadow DOM عندما يسمح المتصفح بذلك.
+
+## آلية الاستخراج
+
+يعمل المحرك بطريقة عامة متعددة المراحل. يبدأ بفتح الصفحة ومراقبة طلبات واستجابات الشبكة، ثم يحاول تشغيل عناصر HTML5 وتفعيل الإطارات الكسولة والنقر على أزرار التشغيل وعلامات اختيار السيرفر. بعد ذلك يفحص DOM وخصائص `data-*` وتهيئات المشغلات وملفات JSON وJavaScript والإطارات المتداخلة. تُحلل manifests المكتشفة لاستخراج الجودات والترجمات، ثم تُرتب المرشحات وتُفحص مع الحفاظ على Referer وسياق الطلب عندما يكون ذلك متاحًا.
+
+يتضمن التحقق رفض روابط الإعلانات والمقاطع الوهمية والـ segments، ورفض ردود HTML التي تتظاهر بأنها ملفات MP4، والتحقق من بنية HLS وDASH، وتمييز الوسائط المشفرة أو المحمية.
+
+## رموز الأخطاء المهمة
+
+| الرمز | المعنى |
+|---|---|
+| `MISSING_URL` | لم يتم إرسال رابط صفحة |
+| `INVALID_URL` | الرابط غير صالح أو مرفوض بسبب حماية SSRF |
+| `QUEUE_ADD_TIMEOUT` | تعذر إضافة المهمة ضمن المهلة |
+| `QUEUE_UNAVAILABLE` | Redis أو الطابور غير متاح أثناء قراءة الحالة |
+| `EXTRACTION_TIMEOUT` | تجاوز الاستخراج الحد الزمني المحدد |
+| `NO_STREAM_FOUND` | انتهى الفحص دون العثور على رابط فيديو |
+| `NO_WATCH_CANDIDATE` | البحث أعاد صفحات معلوماتية فقط دون صفحة مشاهدة |
+| `BOT_PROTECTION_SUSPECTED` | ظهرت مؤشرات CAPTCHA أو Cloudflare أو حماية روبوت |
+| `DRM_PROTECTED` | اكتُشفت وسائط مشفرة أو DRM؛ لا يتم فك تشفيرها |
+| `CLOSED_PLAYER_OR_BLOB_ONLY` | اكتُشفت Pipeline مثل MSE دون رابط عام مكشوف |
+| `STREAM_FOUND_BUT_UNPLAYABLE` | وُجدت مرشحات لكن لم ينجح التحقق من قابلية التشغيل |
+| `TOKEN_EXPIRED_OR_SHORT_LIVED` | الرابط الموقع منتهي أو قصير العمر جدًا |
+| `BROWSER_STARTING` | المتصفح ما زال في مرحلة الإقلاع؛ أعد المحاولة بعد الجاهزية |
+
+## التخزين المؤقت والجلسات
+
+يستخدم المشروع كاشًا متعدد المستويات عند توفر مكوناته. تُحفظ النتائج مؤقتًا في ذاكرة العملية، ويمكن استخدام Redis وMongoDB للبيانات المشتركة والدائمة. تُحفظ Cookies الخاصة بجلسة المستخدم في Redis لفترة محدودة عند توفر Redis. الروابط الموقعة قصيرة العمر لا تُخزن كاشًا عندما تكون مدة صلاحيتها قصيرة.
+
+## الأمان والقيود
+
+يستخدم المشروع JWT وbcrypt للمصادقة، وHelmet وCORS وrate limiting لحماية HTTP، وSSRF validation لمنع الوصول إلى عناوين خاصة، وفلترة للروابط غير المرغوبة. يجب تشغيل الخدمة خلف HTTPS في الإنتاج، وتغيير `JWT_SECRET`، وعدم مشاركة التوكنات أو مفاتيح OMDb وTMDB أو بيانات Redis وMongoDB.
+
+لا يهدف المشروع إلى تجاوز DRM أو CAPTCHA أو Cloudflare أو تسجيل الدخول غير المصرح به. إذا كان الموقع لا يكشف رابط الوسائط إلا بعد تحدٍ تفاعلي أو داخل نظام DRM، فسيعيد المحرك رمزًا تشخيصيًا بدل الادعاء بنجاح زائف.
+
+## الاختبارات والتحقق
+
+الفحوص المتاحة حاليًا:
+
 ```bash
-curl -X POST http://localhost:3000/api/v1/webhooks \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{
-    "url": "https://your-endpoint.com/webhook",
-    "events": ["extraction.complete"]
-  }'
+node --check server.js
+git diff --check
+npm test
 ```
 
-## 🐳 Docker Deployment
+يطبع `npm test` حاليًا رسالة `Tests coming soon`، لذلك لا يمثل بعدُ مجموعة اختبارات تكامل كاملة. قبل النشر يجب تنفيذ فحص الصياغة وفحص الفرق واختبار نقطة الصحة، ثم تجربة صفحة محتوى مصرح بها أو عامة لا تستخدم DRM أو CAPTCHA.
 
-### Build & Run
-```bash
-docker-compose up -d
+## Swagger
+
+تتوفر واجهة Swagger الحالية على:
+
+```text
+/api-docs
 ```
 
-### View Logs
-```bash
-docker-compose logs -f app
-```
+استخدمها لاكتشاف تعريفات الواجهات المنشورة في النسخة الحالية، مع الاعتماد على مسارات API المذكورة أعلاه باعتبارها المسارات الفعلية في الخادم.
 
-### Stop
-```bash
-docker-compose down
-```
+## الترخيص
 
-## 📊 API Documentation
+MIT License.
 
-Visit `http://localhost:3000/api-docs` for interactive Swagger documentation.
+آخر تحديث للتوثيق: 2026-08-24.
 
-## ⚙️ Configuration
-
-### Proxy Management
-- Automatic health checks every 5 minutes
-- Rotation on each request
-- Auto-mark unavailable after 3 consecutive failures
-- Recovery attempted with exponential backoff
-
-### Caching Strategy
-- **L1**: In-memory (100 items max)
-- **L2**: Redis (86400 seconds)
-- **L3**: MongoDB (259200 seconds)
-
-### Extraction Strategies
-1. **Network**: Route-based interception
-2. **DOM**: DOM parsing with cheerio
-3. **Script**: Regex-based URL extraction
-4. **MSE**: MediaSource interception
-5. **XHR**: Fetch/XMLHttpRequest interception
-
-### Circuit Breaker
-- **Threshold**: 5 failures
-- **Timeout**: 60 seconds
-- **Recovery**: 2 successful requests
-
-## 🔒 Security
-
-- ✅ JWT authentication
-- ✅ Rate limiting (100 requests/15 min per user)
-- ✅ SSRF protection with DNS validation
-- ✅ MongoDB injection prevention
-- ✅ Helmet security headers
-- ✅ Cookie validation & sanitization
-- ✅ Proxy validation before use
-
-## 📈 Monitoring
-
-### Metrics Available
-- HTTP request duration
-- Extraction duration
-- Success/failure rates
-- Cache hit rates (L1/L2/L3)
-- Proxy health status
-
-Visit `/api/v1/metrics` for Prometheus format metrics.
-
-## 🐛 Error Handling
-
-All errors follow this format:
-```json
-{
-  "success": false,
-  "error": "Error message",
-  "code": "ERROR_CODE"
-}
-```
-
-Error codes:
-- `MISSING_FIELDS`: Required fields missing
-- `MISSING_URL`: URL parameter required
-- `INVALID_URL`: URL validation failed
-- `DB_UNAVAILABLE`: Database connection failed
-- `JOB_NOT_FOUND`: Job ID doesn't exist
-- `NO_FAILED_JOB`: No failed job to retry
-- `EXTRACT_ERROR`: Extraction failed
-- `SEARCH_ERROR`: Search failed
-
-## 🚀 Performance Tips
-
-1. **Use proxies** for better reliability
-2. **Enable caching** to reduce extraction time
-3. **Set appropriate quality** to filter results
-4. **Use webhooks** instead of polling
-5. **Monitor metrics** for insights
-
-## 📄 License
-
-MIT License - See LICENSE file
-
-## 🤝 Contributing
-
-Pull requests are welcome. For major changes, open an issue first.
-
-## 📧 Support
-
-For issues and questions, create a GitHub issue or contact the team.
-
----
-
-**Made with ❤️ by Vd-Pro Team**
-
-Last Updated: 2026-08-23
- 
+صيانة المشروع: Vd-Pro Team.
