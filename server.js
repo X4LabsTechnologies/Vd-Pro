@@ -49,9 +49,17 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) =
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const OMDB_API_KEY = process.env.OMDB_API_KEY || '';
 
-const HARD_EXTRACT_MS = parseInt(process.env.HARD_EXTRACT_MS || '110000', 10);
-const HARD_SEARCH_MS = parseInt(process.env.HARD_SEARCH_MS || '30000', 10);
-const NAV_TIMEOUT_MS = parseInt(process.env.NAV_TIMEOUT_MS || '45000', 10);
+function envMs(name, fallback, minimum, maximum) {
+  const parsed = Number.parseInt(process.env[name] || '', 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, parsed));
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+const HARD_EXTRACT_MS = envMs('HARD_EXTRACT_MS', 110000, 10000, 15 * 60 * 1000);
+const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
+const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
 const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
@@ -212,10 +220,12 @@ function resolveUrl(base, rel) {
     } catch (e) {}
     if (/^(https?:|blob:|data:)/i.test(value)) return value;
     if (value.startsWith('//')) {
-      const scheme = String(base || '').startsWith('http:') ? 'http:' : 'https:';
+      const scheme = /^http:/i.test(String(base || '')) ? 'http:' : 'https:';
       return scheme + value;
     }
-    return new URL(value, base).href;
+    const origin = String(base || '').trim();
+    if (!origin) return null;
+    return new URL(value, origin).href;
   } catch (e) {
     return null;
   }
@@ -259,12 +269,16 @@ function isJunkMediaUrl(url = '') {
 }
 
 function canonicalMediaKey(url = '') {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
   try {
-    const u = new URLParser(String(url));
+    const normalized = raw.startsWith('//') ? 'https:' + raw : raw;
+    const u = new URLParser(normalized);
     u.hash = '';
+    u.hostname = u.hostname.toLowerCase();
     return u.href;
   } catch (e) {
-    return String(url || '').split('#')[0];
+    return raw.split('#')[0].replace(/\/$/, '');
   }
 }
 
@@ -898,7 +912,7 @@ async function tryClickPlayerTabs(page) {
             if (box && box.width > 0 && box.height > 0) {
               await el.click({ timeout: 600 }).catch(() => {});
               n++;
-              await page.waitForTimeout(350).catch(() => {});
+              await sleep(350).catch(() => {});
             }
           } catch (e) {}
         }
@@ -1400,7 +1414,7 @@ class VideoExtractor {
 
       try {
         await page.waitForLoadState('networkidle', { timeout: Math.min(6000, NAV_TIMEOUT_MS) }).catch(() => {});
-        await page.waitForTimeout(deep ? 1200 : 700);
+        await sleep(deep ? 1200 : 700);
         await page.evaluate(() => {
           window.scrollBy(0, 320);
           window.scrollBy(0, 320);
@@ -1408,7 +1422,7 @@ class VideoExtractor {
       } catch (e) {}
 
       diagnostics.lazyIframes = await activateLazyIframes(page);
-      await page.waitForTimeout(deep ? 800 : 400);
+      await sleep(deep ? 800 : 400);
 
       // Interaction round 1
       diagnostics.playClicked = await tryClickPlay(page);
@@ -1418,7 +1432,7 @@ class VideoExtractor {
         await tryClickPlay(page);
         await forceHtml5Play(page);
       }
-      await page.waitForTimeout(deep ? 4200 : 2200);
+      await sleep(deep ? 4200 : 2200);
       diagnostics.strategies.push('network');
 
       await harvestDomAndHooks('r1');
@@ -1428,7 +1442,7 @@ class VideoExtractor {
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
         await forceHtml5Play(page);
-        await page.waitForTimeout(deep ? 6500 : 3200);
+        await sleep(deep ? 6500 : 3200);
         await harvestDomAndHooks('r2');
       }
 
@@ -1452,16 +1466,16 @@ class VideoExtractor {
         await activateLazyIframes(page);
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         await forceHtml5Play(page);
-        await page.waitForTimeout(3000);
+        await sleep(3000);
         await harvestDomAndHooks('deep');
         diagnostics.strategies.push('deep-pass');
       }
 
       // Give media waiter a moment if still empty
       if (!hasPlayable()) {
-        await Promise.race([mediaWait, page.waitForTimeout(deep ? 4000 : 2000)]);
+        await Promise.race([mediaWait, sleep(deep ? 4000 : 2000)]);
       } else {
-        await Promise.race([mediaWait, page.waitForTimeout(500)]);
+        await Promise.race([mediaWait, sleep(500)]);
       }
     };
 
@@ -1574,9 +1588,9 @@ class VideoExtractor {
     if (allowSoftRetry) {
       diagnostics.softRetry = true;
       try {
-        await page.waitForTimeout(1500);
+        await sleep(1500);
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
-        await page.waitForTimeout(1200);
+        await sleep(1200);
       } catch (e) {}
       for (let i = 0; i < validationResults.length; i++) {
         if (validationResults[i].check.valid) continue;
@@ -1737,7 +1751,7 @@ class VideoExtractor {
         await activateLazyIframes(child);
         await tryClickPlay(child);
         await forceHtml5Play(child);
-        await child.waitForTimeout(deep ? 2500 : 1400);
+        await sleep(deep ? 2500 : 1400);
         this.mineHtml(await child.content(), bags, candidate);
         const media = await child.evaluate(() => {
           const out = [];
@@ -1749,7 +1763,7 @@ class VideoExtractor {
           return out;
         });
         media.forEach((u) => this.add(bags, u));
-        await Promise.race([waitMedia, child.waitForTimeout(deep ? 2000 : 800)]);
+        await Promise.race([waitMedia, sleep(deep ? 2000 : 800)]);
         const found = this.toObj(bags, candidate);
         if (found.m3u8.length || found.mp4.length || found.mpd.length || found.webm.length) break;
       } catch (e) {
@@ -2371,7 +2385,7 @@ async function processExtractionJob(job) {
         return { success: false, error: 'Browser is still starting; retry shortly', errorCode: e.code || 'BROWSER_STARTING', duration: 0 };
       }
     }
-    proxy = proxyManager.getNext();
+    proxy = PROXIES.length ? proxyManager.getNext() : null;
     ctx = await browserPool.get(proxy);
     const page = ctx.page;
 
