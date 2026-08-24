@@ -68,7 +68,10 @@ REDIS_URL=redis://default:PASSWORD@HOST:PORT
 | `PROXIES` | فارغ | قائمة بروكسيات مفصولة بفواصل |
 | `PROXY_URL` | فارغ | بروكسي عام واحد بصيغة URL |
 | `VD_PROXY_URL` | فارغ | اسم بديل لبروكسي واحد |
-| `VD_PROXY_URLS` | فارغ | اسم بديل لقائمة بروكسيات |
+| `VD_PROXY_URLS` | فارغ | اسم بديل لقائمة بروكسيات المتصفح |
+| `MEDIAFLOW_PROXY_URL` | عنوان MediaFlow المرفق | نقطة MediaFlow لإعادة توجيه HLS |
+| `MEDIAFLOW_PROXY_PASSWORD` | فارغ | كلمة مرور MediaFlow؛ عند غيابها يبقى الرابط الخام |
+| `MEDIAFLOW_USER_AGENT` | User-Agent افتراضي | User-Agent المرسل إلى MediaFlow |
 | `BROWSER_POOL_COUNT` | `1` | عدد عمليات Chromium |
 | `BROWSER_CONTEXTS_PER_POOL` | `2` | عدد سياقات المتصفح لكل عملية |
 | `HARD_EXTRACT_MS` | `110000` | الحد الأقصى لعملية الاستخراج بالميلي ثانية |
@@ -89,7 +92,19 @@ BROWSER_POOL_COUNT=1
 BROWSER_CONTEXTS_PER_POOL=2
 ```
 
-لا يضيف ضبط البروكسي أي تجاوز للحماية؛ هو مسار اختياري لتوجيه جلسة المتصفح عندما تكون قيمة بروكسي صالحة متاحة. لا تضع الأسرار داخل المستودع.
+لا يضيف ضبط بروكسي المتصفح أي تجاوز للحماية؛ هو مسار اختياري لتوجيه جلسة المتصفح عندما تكون قيمة صالحة متاحة. لا تضع الأسرار داخل المستودع.
+
+### ربط MediaFlow HLS
+
+يمكن لـ Vd-Pro، بشكل اختياري، إعادة توجيه روابط HLS المكتشفة عبر MediaFlow. لا يُرسل الخادم أي طلب إلى MediaFlow أثناء التشغيل إذا لم تضبط كلمة المرور. عند التفعيل، تُحوّل `primaryUrl` وروابط `urls.m3u8` وروابط HLS داخل `variants` إلى المسار العام التالي، مع ترميز الرابط الخام وكلمة المرور والرؤوس:
+
+```env
+MEDIAFLOW_PROXY_URL=https://mediaflow-proxy-light-37xr.onrender.com
+MEDIAFLOW_PROXY_PASSWORD=كلمة_المرور_الفعلية
+MEDIAFLOW_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+```
+
+يُرسل `h_referer` من سياق الرابط المكتشف، ويُرسل `h_user-agent` من الإعداد أعلاه. تُحفظ قيمة الرابط الخام في `linkMeta.originalUrl`، ويُوضع رابط MediaFlow في `linkMeta.proxyUrl`، بينما تبقى روابط MP4 وWebM وDASH دون إعادة توجيه لأن إعداد MediaFlow الموصوف هنا خاص بمسار HLS. لا يتم اختبار خادم MediaFlow تلقائيًا؛ تظهر حالة التفعيل فقط في health عبر `mediaFlow.configured`.
 
 ## تشغيل Render
 

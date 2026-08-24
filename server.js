@@ -33,6 +33,7 @@ import dns from 'dns/promises';
 import bcrypt from 'bcrypt';
 import swaggerUi from 'swagger-ui-express';
 import { runFallbackExtraction } from './src/fallback-extractor.js';
+import { applyMediaFlowProxy, isMediaFlowProxyConfigured } from './src/mediaflow-proxy.js';
 
 config();
 
@@ -2264,6 +2265,7 @@ app.get('/api/v1/health', (req, res) => {
       omdbImdb: !!OMDB_API_KEY
     },
     proxy: { configured: PROXIES.length > 0, count: PROXIES.length, checked: proxyManager.proxies.filter((p) => p.health.checked).length, available: proxyManager.proxies.filter((p) => p.health.available).length },
+    mediaFlow: { configured: isMediaFlowProxyConfigured() },
     notes: {
       drm: 'Detected and reported; not decrypted',
       captcha: 'Detected and reported; not solved',
@@ -2307,7 +2309,7 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
     if (!v.valid) return res.status(400).json({ success: false, error: v.reason, code: 'INVALID_URL' });
     const deepFlag = deep === '1' || deep === 'true';
     const cached = await cacheManager.get(url, quality, deepFlag);
-    if (cached) return res.json({ success: true, fromCache: true, ...cached });
+    if (cached) return res.json({ success: true, fromCache: true, ...applyMediaFlowProxy(cached) });
     const flightKey = 'ex:' + url + '::' + quality + '::' + (deepFlag ? 1 : 0);
     if (singleFlight.get(flightKey)) return res.status(202).json({ success: true, message: 'Processing', dedup: true });
     const userId = req.user._id?.toString?.() || String(req.user._id);
@@ -2534,10 +2536,10 @@ async function processExtractionJob(job) {
           error: 'Only informational pages found; no watch candidate to extract'
         };
       }
-      const extraction = await extractWithFallback(preferred.url, page, proxy, userId, {
+      const extraction = applyMediaFlowProxy(await extractWithFallback(preferred.url, page, proxy, userId, {
         quality: job.data.quality,
         deep: job.data.deep
-      });
+      }));
       return {
         success: !!extraction.success,
         query: job.data.search,
@@ -2551,10 +2553,10 @@ async function processExtractionJob(job) {
       };
     }
 
-    const result = await extractWithFallback(job.data.url, page, proxy, userId, {
+    const result = applyMediaFlowProxy(await extractWithFallback(job.data.url, page, proxy, userId, {
       quality: job.data.quality,
       deep: job.data.deep
-    });
+    }));
 
     metrics.extractionDuration.labels(result.success ? 'success' : 'failure').observe(result.duration || 0);
     if (result.success) {
