@@ -27,6 +27,10 @@ function qualityScore(label = '') {
   const n = Number.parseInt(String(label), 10);
   return Number.isFinite(n) ? n : 0;
 }
+function subtitleLanguage(url, label = '') {
+  const m = `${url} ${label}`.match(/(?:^|[._-])(ar|en|fr|de|es|it|nl|pl|tr|pt|ru|ja|ko|zh)(?:[._-]|$)/i);
+  return m ? m[1].toLowerCase() : null;
+}
 function linkMeta(url, referer) {
   const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null, likelySigned: false };
   try {
@@ -60,7 +64,7 @@ function parseHls(manifest, base) {
       if (u) variants.push({ url: u, quality: quality(u, a.RESOLUTION), bandwidth: Number(a.BANDWIDTH || a['AVERAGE-BANDWIDTH'] || 0), resolution: a.RESOLUTION || null, codecs: a.CODECS || null, type: 'hls' });
     } else if (lines[i].startsWith('#EXT-X-MEDIA:')) {
       const a = parseAttrs(lines[i].slice('#EXT-X-MEDIA:'.length)); const u = resolveUrl(base, a.URI);
-      if (u && /SUBTITLES|CLOSED-CAPTIONS/i.test(a.TYPE || '')) subtitles.push({ url: u, language: a.LANGUAGE || null, label: a.NAME || a.LANGUAGE || 'subtitle', type: 'hls' });
+      if (u && /SUBTITLES|CLOSED-CAPTIONS/i.test(a.TYPE || '')) subtitles.push({ url: u, language: a.LANGUAGE || subtitleLanguage(u, a.NAME) || null, label: a.NAME || a.LANGUAGE || 'subtitle', group: a['GROUP-ID'] || null, default: String(a.DEFAULT).toUpperCase() === 'YES', forced: String(a.FORCED).toUpperCase() === 'YES', type: 'hls' });
     }
   }
   return { variants, subtitles };
@@ -76,17 +80,19 @@ function parseDash(manifest, base) {
   for (const m of manifest.matchAll(/<AdaptationSet\b([^>]*)>([\s\S]*?)<\/AdaptationSet>/gi)) {
     const attrs = Object.fromEntries([...m[1].matchAll(/([A-Za-z][\w-]*)="([^"]*)"/g)].map((x) => [x[1].toLowerCase(), x[2]]));
     if (!/text|subtitle|caption/i.test(`${attrs.contentType || ''} ${attrs.mimeType || ''}`)) continue;
-    for (const u of m[2].matchAll(/<BaseURL[^>]*>([^<]+)<\/BaseURL>/gi)) { const abs = resolveUrl(mpdBase, u[1]); if (abs) subtitles.push({ url: abs, language: attrs.lang || null, label: attrs.lang || 'subtitle', type: 'dash' }); }
+    for (const u of m[2].matchAll(/<BaseURL[^>]*>([^<]+)<\/BaseURL>/gi)) { const abs = resolveUrl(mpdBase, u[1]); if (abs) subtitles.push({ url: abs, language: attrs.lang || subtitleLanguage(abs) || null, label: attrs.lang || 'subtitle', type: 'dash' }); }
   }
   return { variants, subtitles };
 }
 
-export async function runFallbackExtraction({ page, pageUrl, deep = false, quality: requestedQuality = 'auto' }) {
-  const found = new Map(), subtitles = new Map(), referers = new Map();
-  const diagnostics = { fallback: true, requestsObserved: 0, mediaRequests: 0, framesVisited: 0, strategies: [], timedOut: false };
-  const add = (u, ref = pageUrl) => { const abs = resolveUrl(pageUrl, u); if (!abs || JUNK_RE.test(abs)) return; if (SUB_RE.test(abs)) subtitles.set(key(abs), { url: abs, language: null, label: 'subtitle', type: 'file' }); else if (MEDIA_RE.test(abs)) { found.set(key(abs), abs); referers.set(key(abs), ref); } };
-  const onReq = (req) => { diagnostics.requestsObserved++; const u = req.url(); if (MEDIA_RE.test(u) || SUB_RE.test(u)) { diagnostics.mediaRequests++; add(u, req.headers().referer || pageUrl); } };
-  page.on('request', onReq);
+export async function runFallbackExtraction({ page, pageUrl, deep = false, quality: requestedQuality = 'auto', cookies = [], headers = {} }) {
+  const found = new Map(), subtitles = new Map(), referers = new Map(), responseBodies = new Map(), mediaKeys = new Set();
+  const diagnostics = { fallback: true, requestsObserved: 0, mediaRequests: 0, framesVisited: 0, strategies: [], timedOut: false, responseMediaCandidates: 0, validatedCandidates: 0 };
+  const add = (u, ref = pageUrl) => { const abs = resolveUrl(pageUrl, u); if (!abs || JUNK_RE.test(abs)) return; if (SUB_RE.test(abs)) subtitles.set(key(abs), { url: abs, language: subtitleLanguage(abs) || null, label: subtitleLanguage(abs) || 'subtitle', type: 'file' }); else if (MEDIA_RE.test(abs)) { found.set(key(abs), abs); referers.set(key(abs), ref); } };
+  const onReq = (req) => { diagnostics.requestsObserved++; const u = req.url(); if (MEDIA_RE.test(u) || SUB_RE.test(u)) { const k = key(u); if (!mediaKeys.has(k)) { mediaKeys.add(k); diagnostics.mediaRequests++; } add(u, req.headers().referer || pageUrl); } };
+  const onRes = async (res) => { try { const u = res.url(); const ct = String(res.headers()['content-type'] || '').toLowerCase(); if (MEDIA_RE.test(u) || SUB_RE.test(u) || /mpegurl|dash\+xml|video\//i.test(ct)) { add(u, pageUrl); diagnostics.responseMediaCandidates++; if (/mpegurl|dash\+xml|json|text\//i.test(ct)) responseBodies.set(key(u), await res.text().catch(() => '')); } } catch {} };
+  page.on('request', onReq); page.on('response', onRes);
+  if (cookies?.length) await page.context().addCookies(cookies).catch(() => {});
   try {
     await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     for (let round = 0; round < (deep ? 3 : 2); round++) {
@@ -106,14 +112,27 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
       if (!/\.m3u8(?:[?#]|$)|\.mpd(?:[?#]|$)|manifest|playlist/i.test(u)) continue;
       try {
         const res = await page.context().request.get(u, { timeout: 9000, failOnStatusCode: false, maxRedirects: 5, headers: { referer: referers.get(key(u)) || pageUrl } });
-        const body = await res.text();
+        const body = responseBodies.get(key(u)) || await res.text();
         if (/^\s*#EXTM3U/m.test(body)) { const p = parseHls(body, u); p.variants.forEach((v) => found.set(key(v.url), v.url)); p.subtitles.forEach((s) => subtitles.set(key(s.url), s)); }
         if (/<MPD[\s>]/i.test(body)) { const p = parseDash(body, u); p.variants.forEach((v) => found.set(key(v.url), v.url)); p.subtitles.forEach((s) => subtitles.set(key(s.url), s)); }
       } catch {}
     }
-  } finally { page.off('request', onReq); }
-  const variants = [...found.values()].map((url) => ({ url, quality: quality(url), bandwidth: 0, type: /\.m3u8|manifest|playlist/i.test(url) ? 'hls' : /\.mpd/i.test(url) ? 'dash' : /\.webm/i.test(url) ? 'webm' : 'mp4', referer: referers.get(key(url)) || pageUrl }));
+  } finally { page.off('request', onReq); page.off('response', onRes); }
+  const candidates = [...found.values()].map((url) => ({ url, quality: quality(url), bandwidth: 0, type: /\.m3u8|manifest|playlist/i.test(url) ? 'hls' : /\.mpd/i.test(url) ? 'dash' : /\.webm/i.test(url) ? 'webm' : 'mp4', referer: referers.get(key(url)) || pageUrl }));
+  const variants = [];
+  for (const v of candidates.slice(0, 40)) {
+    let validation = { valid: false, status: null, contentType: null, reason: 'not-checked' };
+    try {
+      const requestHeaders = { ...headers, referer: v.referer || pageUrl };
+      if (v.type === 'mp4' || v.type === 'webm') requestHeaders.range = 'bytes=0-2047';
+      const res = await page.context().request.get(v.url, { timeout: 9000, failOnStatusCode: false, maxRedirects: 5, headers: requestHeaders });
+      const ct = String(res.headers()['content-type'] || '').toLowerCase(); const body = (v.type === 'hls' || v.type === 'dash' || v.type === 'mp4' || v.type === 'webm') ? await res.body().then((b) => b.subarray(0, 4096)).catch(() => Buffer.alloc(0)) : Buffer.alloc(0); const text = body.toString('utf8');
+      const validType = v.type === 'hls' ? (/mpegurl|application\/vnd.apple.mpegurl/i.test(ct) || /^\s*#EXTM3U/m.test(text)) : v.type === 'dash' ? (/dash\+xml|application\/xml/i.test(ct) || /<MPD[\s>]/i.test(text)) : /^(video\/|application\/octet-stream)/i.test(ct) || (v.type === 'mp4' && text.includes('ftyp')) || (v.type === 'webm' && text.includes('webm'));
+      validation = { valid: res.status() >= 200 && res.status() < 400 && validType, status: res.status(), contentType: ct || null, reason: res.status() < 200 || res.status() >= 400 ? `http-${res.status()}` : (validType ? null : 'content-type-or-signature') };
+    } catch (e) { validation.reason = e.code || e.message; }
+    v.validation = validation; if (validation.valid) { variants.push(v); diagnostics.validatedCandidates++; }
+  }
   variants.sort((a, b) => qualityScore(b.quality) - qualityScore(a.quality) || Number(b.bandwidth || 0) - Number(a.bandwidth || 0));
   const picked = variants.find((v) => requestedQuality === 'auto' || v.quality === requestedQuality) || variants[0];
-  return { success: !!picked, primaryUrl: picked?.url || null, urls: { m3u8: variants.filter((v) => v.type === 'hls').map((v) => v.url), mp4: variants.filter((v) => v.type === 'mp4').map((v) => v.url), webm: variants.filter((v) => v.type === 'webm').map((v) => v.url), mpd: variants.filter((v) => v.type === 'dash').map((v) => v.url), segment: [], other: [] }, variants, subtitles: [...subtitles.values()], qualities: [...new Set(variants.map((v) => v.quality).filter((x) => x !== 'unknown'))], duration: 0, strategy: diagnostics.strategies.join('+'), quality: requestedQuality, validated: false, linkMeta: picked ? linkMeta(picked.url, picked.referer) : null, error: picked ? null : 'Fallback extractor found no public media URL', errorCode: picked ? null : 'FALLBACK_NO_STREAM_FOUND', diagnostics, source: 'vd-pro-fallback', pageTitle: await page.title().catch(() => null), completedCleanly: true };
+  return { success: !!picked, primaryUrl: picked?.url || null, urls: { m3u8: variants.filter((v) => v.type === 'hls').map((v) => v.url), mp4: variants.filter((v) => v.type === 'mp4').map((v) => v.url), webm: variants.filter((v) => v.type === 'webm').map((v) => v.url), mpd: variants.filter((v) => v.type === 'dash').map((v) => v.url), segment: [], other: [] }, variants, subtitles: [...subtitles.values()], qualities: [...new Set(variants.map((v) => v.quality).filter((x) => x !== 'unknown'))], duration: 0, strategy: diagnostics.strategies.join('+'), quality: requestedQuality, validated: !!picked, linkMeta: picked ? linkMeta(picked.url, picked.referer) : null, error: picked ? null : 'Fallback extractor found no validated public media URL', errorCode: picked ? null : 'FALLBACK_NO_VALIDATED_STREAM', diagnostics, source: 'vd-pro-fallback', pageTitle: await page.title().catch(() => null), completedCleanly: true };
 }

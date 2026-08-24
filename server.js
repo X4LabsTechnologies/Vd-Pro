@@ -63,7 +63,8 @@ const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
 const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
 const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
-const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
+const FALLBACK_BUDGET_MS = envMs('FALLBACK_BUDGET_MS', 30000, 5000, 90000);
+const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + FALLBACK_BUDGET_MS + 15000, HARD_SEARCH_MS + 15000);
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
 const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
 const BROWSER_POOL_COUNT = Math.max(1, Math.min(4, parseInt(process.env.BROWSER_POOL_COUNT || '1', 10)));
@@ -2361,6 +2362,7 @@ app.use(
 );
 
 async function extractWithFallback(url, page, proxy, userId, options = {}) {
+  const startedAt = Date.now();
   let primary = null;
   let primaryError = null;
   try {
@@ -2378,10 +2380,13 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
 
   let fallbackCtx = null;
   try {
+    const remaining = Math.max(5000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - startedAt) - 5000);
+    const budget = Math.min(FALLBACK_BUDGET_MS, remaining);
     fallbackCtx = await browserPool.get(PROXIES.length ? proxyManager.getNext() : null);
+    const cookies = await sessionManager.load(userId);
     const fallback = await withTimeout(
-      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: options.deep, quality: options.quality }),
-      Math.min(HARD_EXTRACT_MS, 45000),
+      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: options.deep, quality: options.quality, cookies, headers: { referer: url } }),
+      budget,
       'FALLBACK_EXTRACTION_TIMEOUT'
     );
     if (fallback.success) {
