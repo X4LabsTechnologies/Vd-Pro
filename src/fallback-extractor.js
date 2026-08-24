@@ -120,18 +120,24 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
   } finally { page.off('request', onReq); page.off('response', onRes); }
   const candidates = [...found.values()].map((url) => ({ url, quality: quality(url), bandwidth: 0, type: /\.m3u8|manifest|playlist/i.test(url) ? 'hls' : /\.mpd/i.test(url) ? 'dash' : /\.webm/i.test(url) ? 'webm' : 'mp4', referer: referers.get(key(url)) || pageUrl }));
   const variants = [];
-  for (const v of candidates.slice(0, 40)) {
+  const toValidate = candidates.slice(0, 16);
+  const validateCandidate = async (v) => {
     let validation = { valid: false, status: null, contentType: null, reason: 'not-checked' };
     try {
       const requestHeaders = { ...headers, referer: v.referer || pageUrl };
       if (v.type === 'mp4' || v.type === 'webm') requestHeaders.range = 'bytes=0-2047';
-      const res = await page.context().request.get(v.url, { timeout: 9000, failOnStatusCode: false, maxRedirects: 5, headers: requestHeaders });
+      const res = await page.context().request.get(v.url, { timeout: 5000, failOnStatusCode: false, maxRedirects: 5, headers: requestHeaders });
       const ct = String(res.headers()['content-type'] || '').toLowerCase(); const body = (v.type === 'hls' || v.type === 'dash' || v.type === 'mp4' || v.type === 'webm') ? await res.body().then((b) => b.subarray(0, 4096)).catch(() => Buffer.alloc(0)) : Buffer.alloc(0); const text = body.toString('utf8');
       const validType = v.type === 'hls' ? (/mpegurl|application\/vnd.apple.mpegurl/i.test(ct) || /^\s*#EXTM3U/m.test(text)) : v.type === 'dash' ? (/dash\+xml|application\/xml/i.test(ct) || /<MPD[\s>]/i.test(text)) : /^(video\/|application\/octet-stream)/i.test(ct) || (v.type === 'mp4' && text.includes('ftyp')) || (v.type === 'webm' && text.includes('webm'));
       validation = { valid: res.status() >= 200 && res.status() < 400 && validType, status: res.status(), contentType: ct || null, reason: res.status() < 200 || res.status() >= 400 ? `http-${res.status()}` : (validType ? null : 'content-type-or-signature') };
     } catch (e) { validation.reason = e.code || e.message; }
-    v.validation = validation; if (validation.valid) { variants.push(v); diagnostics.validatedCandidates++; }
+    v.validation = validation; return v;
+  };
+  for (let i = 0; i < toValidate.length; i += 4) {
+    const batch = await Promise.all(toValidate.slice(i, i + 4).map(validateCandidate));
+    for (const v of batch) { if (v.validation.valid) { variants.push(v); diagnostics.validatedCandidates++; } }
   }
+  diagnostics.validationCandidates = toValidate.length;
   variants.sort((a, b) => qualityScore(b.quality) - qualityScore(a.quality) || Number(b.bandwidth || 0) - Number(a.bandwidth || 0));
   const picked = variants.find((v) => requestedQuality === 'auto' || v.quality === requestedQuality) || variants[0];
   return { success: !!picked, primaryUrl: picked?.url || null, urls: { m3u8: variants.filter((v) => v.type === 'hls').map((v) => v.url), mp4: variants.filter((v) => v.type === 'mp4').map((v) => v.url), webm: variants.filter((v) => v.type === 'webm').map((v) => v.url), mpd: variants.filter((v) => v.type === 'dash').map((v) => v.url), segment: [], other: [] }, variants, subtitles: [...subtitles.values()], qualities: [...new Set(variants.map((v) => v.quality).filter((x) => x !== 'unknown'))], duration: 0, strategy: diagnostics.strategies.join('+'), quality: requestedQuality, validated: !!picked, linkMeta: picked ? linkMeta(picked.url, picked.referer) : null, error: picked ? null : 'Fallback extractor found no validated public media URL', errorCode: picked ? null : 'FALLBACK_NO_VALIDATED_STREAM', diagnostics, source: 'vd-pro-fallback', pageTitle: await page.title().catch(() => null), completedCleanly: true };
