@@ -654,19 +654,37 @@ class ProxyManager {
     this.proxies = PROXIES.map((url, id) => ({
       url,
       id,
-      health: { success: 0, failed: 0, consecutive: 0, available: true }
+      health: { success: 0, failed: 0, consecutive: 0, available: true, checked: false, checking: false, lastCheckAt: null, lastError: null, latencyMs: null }
     }));
   }
+  parse(url) {
+    try {
+      const u = new URL(url.includes('://') ? url : 'http://' + url);
+      if (!['http:', 'https:'].includes(u.protocol)) return null;
+      return { protocol: u.protocol.replace(':', ''), host: u.hostname, port: Number(u.port || (u.protocol === 'https:' ? 443 : 80)), auth: u.username ? { username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') } : undefined };
+    } catch { return null; }
+  }
+  async checkOne(proxy) {
+    if (!proxy || proxy.health.checking) return proxy?.health;
+    const parsed = this.parse(proxy.url);
+    proxy.health.checking = true;
+    proxy.health.lastCheckAt = new Date().toISOString();
+    const started = Date.now();
+    try {
+      if (!parsed) throw new Error('INVALID_PROXY_URL');
+      const response = await axios.get('https://api.ipify.org?format=json', { proxy: parsed, timeout: 8000, validateStatus: () => true });
+      if (response.status < 200 || response.status >= 400) throw new Error(`PROXY_HTTP_${response.status}`);
+      proxy.health.checked = true; proxy.health.available = true; proxy.health.lastError = null; proxy.health.latencyMs = Date.now() - started; proxy.health.consecutive = 0;
+    } catch (e) {
+      proxy.health.checked = true; proxy.health.available = false; proxy.health.lastError = String(e.code || e.message || 'PROXY_CHECK_FAILED').slice(0, 160); proxy.health.latencyMs = Date.now() - started; proxy.health.consecutive++;
+    } finally { proxy.health.checking = false; }
+    return proxy.health;
+  }
+  async checkAll() { return Promise.all(this.proxies.map((p) => this.checkOne(p))); }
   getNext() {
     if (!this.proxies.length) return null;
     const ok = this.proxies.filter((p) => p.health.available);
-    if (!ok.length) {
-      this.proxies.forEach((p) => {
-        p.health.available = true;
-        p.health.consecutive = 0;
-      });
-      return this.proxies[0];
-    }
+    if (!ok.length) return null;
     return ok[Math.floor(Math.random() * ok.length)];
   }
   success(p) {
@@ -690,7 +708,7 @@ class ProxyManager {
       } catch (e) {
         safe = '[redacted]';
       }
-      return { url: safe, available: p.health.available, success: p.health.success, failed: p.health.failed };
+      return { url: safe, available: p.health.available, checked: p.health.checked, checking: p.health.checking, success: p.health.success, failed: p.health.failed, consecutive: p.health.consecutive, lastCheckAt: p.health.lastCheckAt, lastError: p.health.lastError, latencyMs: p.health.latencyMs };
     });
   }
 }
@@ -2245,7 +2263,7 @@ app.get('/api/v1/health', (req, res) => {
       tmdb: !!TMDB_API_KEY,
       omdbImdb: !!OMDB_API_KEY
     },
-    proxy: { configured: PROXIES.length > 0, count: PROXIES.length },
+    proxy: { configured: PROXIES.length > 0, count: PROXIES.length, checked: proxyManager.proxies.filter((p) => p.health.checked).length, available: proxyManager.proxies.filter((p) => p.health.available).length },
     notes: {
       drm: 'Detected and reported; not decrypted',
       captcha: 'Detected and reported; not solved',
@@ -2381,6 +2399,23 @@ app.use(
   swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.4.0' } })
 );
 
+function classifyExtractionFailure(result, primaryError = null) {
+  const d = { ...(result?.diagnostics || {}) };
+  const code = result?.errorCode || primaryError?.code || 'EXTRACTION_ERROR';
+  const mediaRequests = Number(d.mediaRequests || 0);
+  const mediaCandidates = Number(d.mediaCandidates || d.responseMediaCandidates || 0);
+  let failureClass = 'unknown';
+  let strategy = 'generic-retry';
+  if (d.captchaSuspected) { failureClass = 'bot-protection'; strategy = 'diagnose-page-protection'; }
+  else if (d.drmSuspected || code === 'DRM_PROTECTED') { failureClass = 'protected-media'; strategy = 'report-protected-media'; }
+  else if (code.includes('TIMEOUT') || d.timedOut) { failureClass = 'timeout'; strategy = mediaRequests ? 'validate-captured-media' : 'deep-iframe-network-retry'; }
+  else if (mediaRequests === 0) { failureClass = 'no-media-requests'; strategy = 'network-or-blocked-page'; }
+  else if (!result?.primaryUrl && (mediaRequests > 0 || mediaCandidates > 0)) { failureClass = 'media-detected-not-selected'; strategy = 'filter-validate-with-context'; }
+  else if (code === 'NO_STREAM_FOUND') { failureClass = 'no-public-media'; strategy = 'dom-script-iframe-scan'; }
+  d.failureClass = failureClass; d.failureStrategy = strategy; d.failureCode = code; d.mediaRequests = mediaRequests; d.mediaCandidates = mediaCandidates; d.failureObservedAt = new Date().toISOString();
+  return d;
+}
+
 async function extractWithFallback(url, page, proxy, userId, options = {}) {
   const startedAt = Date.now();
   let primary = null;
@@ -2390,22 +2425,25 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
   } catch (error) {
     primaryError = error;
   }
+  const primaryDiagnostics = classifyExtractionFailure(primary || { success: false, errorCode: primaryError?.code || 'EXTRACTION_ERROR' }, primaryError);
   const shouldFallback = Boolean(
     primaryError ||
     !primary?.success ||
     !primary?.primaryUrl ||
     ['EXTRACTION_TIMEOUT', 'EXTRACTION_ERROR', 'NO_STREAM_FOUND', 'STREAM_FOUND_BUT_UNPLAYABLE'].includes(primary?.errorCode)
   );
-  if (!shouldFallback || !browserPool) return primary || { success: false, error: primaryError?.message || 'Extraction failed', errorCode: primaryError?.code || 'EXTRACTION_ERROR' };
+  if (!shouldFallback || !browserPool) { const out = primary || { success: false, error: primaryError?.message || 'Extraction failed', errorCode: primaryError?.code || 'EXTRACTION_ERROR' }; out.diagnostics = classifyExtractionFailure(out, primaryError); return out; }
 
   let fallbackCtx = null;
   try {
     const remaining = Math.max(5000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - startedAt) - 5000);
     const budget = Math.min(FALLBACK_BUDGET_MS, remaining);
-    fallbackCtx = await browserPool.get(PROXIES.length ? proxyManager.getNext() : null);
+    const fallbackProxy = PROXIES.length ? proxyManager.getNext() : null;
+    fallbackCtx = await browserPool.get(fallbackProxy);
     const cookies = await sessionManager.load(userId);
+    const fallbackDeep = Boolean(options.deep || ['no-media-requests', 'timeout'].includes(primaryDiagnostics.failureClass) || Number(primaryDiagnostics.framesVisited || 0) < 2);
     const fallback = await withTimeout(
-      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: options.deep, quality: options.quality, cookies, headers: { referer: url } }),
+      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: fallbackDeep, quality: options.quality, cookies, headers: { referer: url } }),
       budget,
       'FALLBACK_EXTRACTION_TIMEOUT'
     );
@@ -2413,17 +2451,17 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
       return {
         ...fallback,
         duration: (primary?.duration || 0) + (fallback.duration || 0),
-        diagnostics: { ...(primary?.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: true, fallbackDiagnostics: fallback.diagnostics },
+        diagnostics: { ...(primary?.diagnostics || {}), ...primaryDiagnostics, fallbackAttempted: true, fallbackSucceeded: true, fallbackStrategy: primaryDiagnostics.failureStrategy, fallbackDeep, fallbackDiagnostics: fallback.diagnostics, fallbackProxy: fallbackProxy ? { id: fallbackProxy.id } : null },
         source: 'vd-pro-fallback'
       };
     }
     if (primary) {
-      return { ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackDiagnostics: fallback.diagnostics, fallbackErrorCode: fallback.errorCode } };
+      return { ...primary, diagnostics: classifyExtractionFailure({ ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackDiagnostics: fallback.diagnostics, fallbackErrorCode: fallback.errorCode } }) };
     }
     return fallback;
   } catch (error) {
-    if (primary) return { ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message, fallbackErrorCode: error.code || 'FALLBACK_ERROR' } };
-    return { success: false, error: primaryError?.message || error.message, errorCode: primaryError?.code || error.code || 'EXTRACTION_ERROR', diagnostics: { fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message } };
+    if (primary) return { ...primary, diagnostics: classifyExtractionFailure({ ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message, fallbackErrorCode: error.code || 'FALLBACK_ERROR' } }, primaryError) };
+    const failed = { success: false, error: primaryError?.message || error.message, errorCode: primaryError?.code || error.code || 'EXTRACTION_ERROR', diagnostics: { fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message } }; failed.diagnostics = classifyExtractionFailure(failed, primaryError); return failed;
   } finally {
     if (fallbackCtx) browserPool.release(fallbackCtx);
   }
@@ -2558,7 +2596,7 @@ async function processExtractionJob(job) {
       singleFlight.del('ex:' + job.data.url + '::' + (job.data.quality || 'auto') + '::' + (job.data.deep ? 1 : 0));
     }
     const code = error.code || (error.message === 'EXTRACTION_TIMEOUT' ? 'EXTRACTION_TIMEOUT' : 'JOB_EXCEPTION');
-    return { success: false, error: error.message, errorCode: code, duration: 0 };
+    return { success: false, error: error.message, errorCode: code, duration: 0, diagnostics: classifyExtractionFailure({ success: false, error: error.message, errorCode: code }, error) };
   } finally {
     if (ctx) browserPool.release(ctx);
   }
@@ -2657,6 +2695,7 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 (async () => {
   try {
     logger.info('Vd-Pro v4.4.0 starting...');
+    proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
     await browserPool.init();
