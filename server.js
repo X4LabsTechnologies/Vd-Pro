@@ -60,6 +60,7 @@ function sleep(ms) {
 const HARD_EXTRACT_MS = envMs('HARD_EXTRACT_MS', 110000, 10000, 15 * 60 * 1000);
 const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
 const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
+const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
 const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
@@ -1260,7 +1261,7 @@ class VideoExtractor {
         diagnostics.requestsObserved++;
         const u = req.url();
         const headers = req.headers();
-        if (headers.referer && (looksLikeMedia(u) || looksLikeSubtitle(u))) mediaReferers.set(u, headers.referer);
+        if (headers.referer && (looksLikeMedia(u) || looksLikeSubtitle(u))) mediaReferers.set(canonicalMediaKey(u), headers.referer);
         if (looksLikeMedia(u) || looksLikeSubtitle(u)) mediaHeaders.set(canonicalMediaKey(u), { referer: headers.referer || pageUrl, origin: headers.origin || null, cookie: headers.cookie || null });
         if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
           diagnostics.mediaRequests++;
@@ -1461,9 +1462,10 @@ class VideoExtractor {
         }
       }
 
-      // Deep final pass
+      // Deep final pass: activate newly-created iframes and repeat player controls.
       if (deep && !hasPlayable()) {
         await activateLazyIframes(page);
+        diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         await forceHtml5Play(page);
         await sleep(3000);
@@ -1471,11 +1473,11 @@ class VideoExtractor {
         diagnostics.strategies.push('deep-pass');
       }
 
-      // Give media waiter a moment if still empty
+      // Allow late media requests to settle, without exceeding the hard extraction limit.
       if (!hasPlayable()) {
-        await Promise.race([mediaWait, sleep(deep ? 4000 : 2000)]);
+        await Promise.race([mediaWait, sleep(deep ? MEDIA_IDLE_WAIT_MS : Math.min(MEDIA_IDLE_WAIT_MS, 5000))]);
       } else {
-        await Promise.race([mediaWait, sleep(500)]);
+        await Promise.race([mediaWait, sleep(Math.min(MEDIA_IDLE_WAIT_MS, 1500))]);
       }
     };
 
@@ -1517,7 +1519,7 @@ class VideoExtractor {
     const hlsResults = await Promise.all(
       result.urls.m3u8.slice(0, 32).map(async (m) => {
         try {
-          return await withTimeout(HLSParser.enrich(m, mediaReferers.get(m) || pageUrl), 8000, 'HLS_TIMEOUT');
+          return await withTimeout(HLSParser.enrich(m, mediaReferers.get(canonicalMediaKey(m)) || pageUrl), 8000, 'HLS_TIMEOUT');
         } catch (e) {
           return { variants: [{ url: m, quality: 'unknown', bandwidth: 0, type: 'hls' }], subtitles: [] };
         }
@@ -1533,7 +1535,7 @@ class VideoExtractor {
     const dashResults = await Promise.all(
       result.urls.mpd.slice(0, 24).map(async (m) => {
         try {
-          return await withTimeout(DASHParser.enrich(m, mediaReferers.get(m) || pageUrl), 8000, 'DASH_TIMEOUT');
+          return await withTimeout(DASHParser.enrich(m, mediaReferers.get(canonicalMediaKey(m)) || pageUrl), 8000, 'DASH_TIMEOUT');
         } catch (e) {
           return { variants: [{ url: m, quality: 'dash', bandwidth: 0, type: 'dash' }], subtitles: [] };
         }
@@ -1569,7 +1571,7 @@ class VideoExtractor {
     const contextAlive = !!(page?.context && !page.context().__vdClosed);
     const validationResults = await Promise.all(
       uniqueVariants.slice(0, 24).map(async (v) => {
-        const referer = mediaReferers.get(v.url) || pageUrl;
+        const referer = mediaReferers.get(canonicalMediaKey(v.url)) || pageUrl;
         let check = { valid: false, reason: 'SKIPPED' };
         if (contextAlive) check = await ResultValidator.validateWithPage(v.url, page, referer);
         if (!check.valid) check = await ResultValidator.validate(v.url, referer);
@@ -1636,6 +1638,13 @@ class VideoExtractor {
 
     const validatedVariants = result.variants.filter((v) => v.validation?.valid);
     const picked = pickByQuality(validatedVariants.length ? validatedVariants : result.variants, quality);
+    diagnostics.mediaCandidates = uniqueVariants.length;
+    diagnostics.validatedCandidates = validatedVariants.length;
+    diagnostics.mediaSignal = diagnostics.mediaRequests === 0
+      ? 'no-media-requests'
+      : picked && picked.validation?.valid
+        ? 'media-request-validated'
+        : 'media-requests-without-accepted-primary';
 
     if (picked && picked.url && picked.validation?.valid) {
       result.primaryUrl = picked.url;

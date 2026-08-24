@@ -68,6 +68,7 @@ REDIS_URL=redis://default:PASSWORD@HOST:PORT
 | `HARD_EXTRACT_MS` | `110000` | الحد الأقصى لعملية الاستخراج بالميلي ثانية |
 | `HARD_SEARCH_MS` | `30000` | الحد الأقصى للبحث بالميلي ثانية |
 | `NAV_TIMEOUT_MS` | `45000` | مهلة فتح الصفحة بالميلي ثانية |
+| `MEDIA_IDLE_WAIT_MS` | `8000` | مدة انتظار استقرار طلبات الوسائط بعد التفاعل |
 | `WATCHDOG_INTERVAL_MS` | `15000` | فترة مراقبة المهام العالقة |
 | `ALLOWED_ORIGINS` | فارغ | نطاقات CORS مفصولة بفواصل |
 | `LOG_LEVEL` | `info` | مستوى سجل التشغيل |
