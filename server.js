@@ -2432,7 +2432,7 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
     !primary?.primaryUrl ||
     ['EXTRACTION_TIMEOUT', 'EXTRACTION_ERROR', 'NO_STREAM_FOUND', 'STREAM_FOUND_BUT_UNPLAYABLE'].includes(primary?.errorCode)
   );
-  if (!shouldFallback || !browserPool) { const out = primary || { success: false, error: primaryError?.message || 'Extraction failed', errorCode: primaryError?.code || 'EXTRACTION_ERROR' }; out.diagnostics = classifyExtractionFailure(out, primaryError); return out; }
+  if (!shouldFallback || !browserPool) { const out = primary || { success: false, error: primaryError?.message || 'Extraction failed', errorCode: primaryError?.code || 'EXTRACTION_ERROR' }; out.diagnostics = out.success ? (out.diagnostics || {}) : classifyExtractionFailure(out, primaryError); return out; }
 
   let fallbackCtx = null;
   try {
