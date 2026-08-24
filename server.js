@@ -349,7 +349,7 @@ function extractLinkMeta(url, referer = null) {
   const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null, likelySigned: false };
   try {
     const parsed = new URLParser(url);
-    const keys = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at', 'valid_until', 'token_exp'];
+    const keys = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at', 'valid_until', 'token_exp', 'e', 'st'];
     let raw = null;
     for (const key of keys) {
       raw = parsed.searchParams.get(key);
@@ -364,7 +364,8 @@ function extractLinkMeta(url, referer = null) {
         meta.likelySigned = true;
       }
     }
-    if (/[?&](signature|sig|token|hdnts|auth)=/i.test(url)) meta.likelySigned = true;
+    if (/[?&](signature|sig|token|hdnts|auth|hash|hmac|key|e|st)=/i.test(url)) meta.likelySigned = true;
+    if (!meta.ttlSeconds && /[?&](hdnts|token|auth)=/i.test(url)) meta.likelySigned = true;
   } catch (e) {}
   return meta;
 }
@@ -1256,6 +1257,9 @@ class VideoExtractor {
     if (looksLikeMedia(pageUrl)) this.add(bags, pageUrl);
     const mediaReferers = new Map();
     const mediaHeaders = new Map();
+    const mediaFrames = new Map();
+    const mediaRedirects = new Map();
+    const frameLifecycle = new Set();
     let finished = false;
 
     const onRequest = (req) => {
@@ -1264,7 +1268,12 @@ class VideoExtractor {
         const u = req.url();
         const headers = req.headers();
         if (headers.referer && (looksLikeMedia(u) || looksLikeSubtitle(u))) mediaReferers.set(canonicalMediaKey(u), headers.referer);
-        if (looksLikeMedia(u) || looksLikeSubtitle(u)) mediaHeaders.set(canonicalMediaKey(u), { referer: headers.referer || pageUrl, origin: headers.origin || null, cookie: headers.cookie || null });
+        if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
+          const key = canonicalMediaKey(u);
+          const frameUrl = (() => { try { return req.frame()?.url() || pageUrl; } catch (e) { return pageUrl; } })();
+          mediaFrames.set(key, frameUrl);
+          mediaHeaders.set(key, { referer: headers.referer || frameUrl || pageUrl, origin: headers.origin || null, cookie: headers.cookie || null, frameUrl });
+        }
         if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
           diagnostics.mediaRequests++;
           this.add(bags, u);
@@ -1275,6 +1284,8 @@ class VideoExtractor {
     const onResponse = async (response) => {
       try {
         const u = response.url();
+        const reqUrl = response.request()?.url?.() || null;
+        if (reqUrl && reqUrl !== u && (looksLikeMedia(reqUrl) || looksLikeSubtitle(reqUrl))) mediaRedirects.set(canonicalMediaKey(u), reqUrl);
         const ct = response.headers()['content-type'] || '';
         if (looksLikeMedia(u, ct) || looksLikeSubtitle(u, ct)) {
           diagnostics.mediaRequests++;
@@ -1301,9 +1312,14 @@ class VideoExtractor {
     };
     page.on('request', onRequest);
     page.on('response', onResponse);
+    const onFrameAttached = (frame) => { frameLifecycle.add(frame); diagnostics.framesAttached = (diagnostics.framesAttached || 0) + 1; };
+    const onFrameNavigated = (frame) => { frameLifecycle.add(frame); diagnostics.framesNavigated = (diagnostics.framesNavigated || 0) + 1; };
+    page.on('frameattached', onFrameAttached);
+    page.on('framenavigated', onFrameNavigated);
     page.context().on('page', onContextPage);
 
     const harvestDomAndHooks = async (label) => {
+      try { await sleep(deep ? 350 : 150); } catch (e) {}
       try {
         this.mineHtml(await page.content(), bags, pageUrl);
         diagnostics.strategies.push(label + '-dom');
@@ -1367,6 +1383,7 @@ class VideoExtractor {
             fu.forEach((u) => this.add(bags, u));
           } catch (e) {}
         }
+        diagnostics.dynamicFrames = Math.max(diagnostics.dynamicFrames || 0, frameLifecycle.size, page.frames().length - 1);
         diagnostics.strategies.push(label + '-frames');
       } catch (e) {}
     };
@@ -1499,6 +1516,8 @@ class VideoExtractor {
       try {
         page.off('request', onRequest);
         page.off('response', onResponse);
+        page.off('frameattached', onFrameAttached);
+        page.off('framenavigated', onFrameNavigated);
         page.context().off('page', onContextPage);
         for (const child of childPages) {
           child.off('request', onRequest);
@@ -1616,7 +1635,8 @@ class VideoExtractor {
     for (const x of validationResults) {
       x.variant.validation = x.check;
       x.variant.referer = x.referer;
-      x.variant.requestContext = mediaHeaders.get(canonicalMediaKey(x.variant.url)) || { referer: x.referer };
+      x.variant.requestContext = mediaHeaders.get(canonicalMediaKey(x.variant.url)) || { referer: mediaReferers.get(canonicalMediaKey(x.variant.url)) || pageUrl, frameUrl: mediaFrames.get(canonicalMediaKey(x.variant.url)) || pageUrl };
+      x.variant.redirectedFrom = mediaRedirects.get(canonicalMediaKey(x.variant.url)) || null;
       if (x.check.drmSuspected) diagnostics.drmSuspected = true;
     }
 
@@ -1708,8 +1728,8 @@ class VideoExtractor {
       const add = (value) => {
         if (typeof value === 'string' && value.trim()) values.push(value.trim());
       };
-      document.querySelectorAll('iframe, video, audio, source, a, [data-src], [data-url]').forEach((el) => {
-        ['src', 'href', 'data-src', 'data-url', 'data-play'].forEach((key) => add(el.getAttribute(key)));
+      document.querySelectorAll('iframe, embed, object, video, audio, source, a, [data-src], [data-url], [data-embed], [data-player], [data-iframe]').forEach((el) => {
+        ['src', 'href', 'data-src', 'data-url', 'data-play', 'data-embed', 'data-player', 'data-iframe'].forEach((key) => add(el.getAttribute(key)));
       });
       document.querySelectorAll('script').forEach((s) => add(s.textContent || ''));
       return values;
@@ -1717,10 +1737,10 @@ class VideoExtractor {
     const out = new Set();
     for (const value of raw) {
       if (!value) continue;
-      const matches = String(value).match(/https?:\/\/[^\s"'<>`\\]+/gi) || [];
+      const matches = String(value).replace(/\\\//g, '/').match(/(?:https?:)?\/\/[^\s"'<>`\\]+/gi) || [];
       for (const match of matches) {
         try {
-          const u = new URLParser(match.replace(/[),;]+$/, ''));
+          const u = new URLParser(match.replace(/[),;]+$/, ''), base.href);
           if (!['http:', 'https:'].includes(u.protocol)) continue;
           if (u.href === base.href) continue;
           const path = (u.pathname + u.search).toLowerCase();
