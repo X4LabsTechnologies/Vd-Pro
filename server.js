@@ -42,7 +42,9 @@ const NODE_ENV = process.env.NODE_ENV || 'production';
 const JWT_SECRET = process.env.JWT_SECRET;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://localhost:27017/vd-pro';
-const PROXIES = (process.env.PROXIES || '').split(',').map((p) => p.trim()).filter(Boolean);
+const PROXY_ENV = process.env.PROXIES || process.env.VD_PROXY_URLS || '';
+const SINGLE_PROXY_ENV = process.env.PROXY_URL || process.env.VD_PROXY_URL || '';
+const PROXIES = [...new Set([...PROXY_ENV.split(','), SINGLE_PROXY_ENV].map((p) => p.trim()).filter(Boolean))];
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const OMDB_API_KEY = process.env.OMDB_API_KEY || '';
@@ -54,6 +56,16 @@ const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
 const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + 30000, HARD_SEARCH_MS + 15000);
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
 const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
+const BROWSER_POOL_COUNT = Math.max(1, Math.min(4, parseInt(process.env.BROWSER_POOL_COUNT || '1', 10)));
+const BROWSER_CONTEXTS_PER_POOL = Math.max(1, Math.min(4, parseInt(process.env.BROWSER_CONTEXTS_PER_POOL || '2', 10)));
+let startupReady = false;
+let startupError = null;
+let startupReadyPromiseResolve;
+let startupReadyPromiseReject;
+const startupReadyPromise = new Promise((resolve, reject) => {
+  startupReadyPromiseResolve = resolve;
+  startupReadyPromiseReject = reject;
+});
 
 if (NODE_ENV === 'production' && (!JWT_SECRET || JWT_SECRET.length < 32)) {
   console.error('FATAL: JWT_SECRET must be set and at least 32 characters in production');
@@ -761,7 +773,7 @@ class BrowserContextPool {
 
 class BrowserPool {
   constructor(n = 2) {
-    this.n = n;
+    this.n = Math.max(1, Math.min(4, Number(n) || 1));
     this.browsers = [];
     this.pools = [];
   }
@@ -781,7 +793,7 @@ class BrowserPool {
         timeout: 25000
       });
       this.browsers.push(browser);
-      const pool = new BrowserContextPool(browser, 2);
+      const pool = new BrowserContextPool(browser, BROWSER_CONTEXTS_PER_POOL);
       await pool.init();
       this.pools.push(pool);
     }
@@ -2171,6 +2183,8 @@ app.use(
 app.get('/api/v1/health', (req, res) => {
   res.json({
     status: 'healthy',
+    ready: startupReady,
+    startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
     version: '4.4.0',
     redis: redis.status,
@@ -2186,6 +2200,7 @@ app.get('/api/v1/health', (req, res) => {
       tmdb: !!TMDB_API_KEY,
       omdbImdb: !!OMDB_API_KEY
     },
+    proxy: { configured: PROXIES.length > 0, count: PROXIES.length },
     notes: {
       drm: 'Detected and reported; not decrypted',
       captcha: 'Detected and reported; not solved',
@@ -2349,6 +2364,13 @@ async function processExtractionJob(job) {
       };
     }
 
+    if (!browserPool || !startupReady) {
+      try {
+        await withTimeout(startupReadyPromise, Math.max(15000, NAV_TIMEOUT_MS + 15000), 'BROWSER_STARTING');
+      } catch (e) {
+        return { success: false, error: 'Browser is still starting; retry shortly', errorCode: e.code || 'BROWSER_STARTING', duration: 0 };
+      }
+    }
     proxy = proxyManager.getNext();
     ctx = await browserPool.get(proxy);
     const page = ctx.page;
@@ -2534,19 +2556,25 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
+httpServer.listen(PORT, '0.0.0.0', () => {
+  logger.info('Vd-Pro v4.4.0 listening on :' + PORT);
+  console.log('VD-PRO v4.4.0 — listening early; browser warm-up in progress — same API');
+});
+
 (async () => {
   try {
     logger.info('Vd-Pro v4.4.0 starting...');
     await connectDatabase();
-    browserPool = new BrowserPool(2);
+    browserPool = new BrowserPool(BROWSER_POOL_COUNT);
     await browserPool.init();
-    httpServer.listen(PORT, '0.0.0.0', () => {
-      logger.info('Vd-Pro v4.4.0 on :' + PORT);
-      console.log('VD-PRO v4.4.0 — multi-round extract + media wait + lazy iframes — same API');
-    });
+    startupReady = true;
+    startupReadyPromiseResolve(true);
+    logger.info({ browsers: BROWSER_POOL_COUNT, contextsPerPool: BROWSER_CONTEXTS_PER_POOL }, 'Vd-Pro ready');
   } catch (e) {
-    logger.error({ error: e.message }, 'Startup failed');
-    process.exit(1);
+    startupError = e;
+    startupReadyPromiseReject(e);
+    logger.error({ error: e.message }, 'Startup degraded');
+    // Keep the HTTP health endpoint alive so Render can restart/retry without a hard process crash.
   }
 })();
 
