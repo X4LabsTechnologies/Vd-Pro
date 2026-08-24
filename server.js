@@ -32,6 +32,7 @@ import { URL as URLParser } from 'url';
 import dns from 'dns/promises';
 import bcrypt from 'bcrypt';
 import swaggerUi from 'swagger-ui-express';
+import { runFallbackExtraction } from './src/fallback-extractor.js';
 
 config();
 
@@ -2359,6 +2360,50 @@ app.use(
   swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.4.0' } })
 );
 
+async function extractWithFallback(url, page, proxy, userId, options = {}) {
+  let primary = null;
+  let primaryError = null;
+  try {
+    primary = await new VideoExtractor().extract(url, page, userId, options);
+  } catch (error) {
+    primaryError = error;
+  }
+  const shouldFallback = Boolean(
+    primaryError ||
+    !primary?.success ||
+    !primary?.primaryUrl ||
+    ['EXTRACTION_TIMEOUT', 'EXTRACTION_ERROR', 'NO_STREAM_FOUND', 'STREAM_FOUND_BUT_UNPLAYABLE'].includes(primary?.errorCode)
+  );
+  if (!shouldFallback || !browserPool) return primary || { success: false, error: primaryError?.message || 'Extraction failed', errorCode: primaryError?.code || 'EXTRACTION_ERROR' };
+
+  let fallbackCtx = null;
+  try {
+    fallbackCtx = await browserPool.get(PROXIES.length ? proxyManager.getNext() : null);
+    const fallback = await withTimeout(
+      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: options.deep, quality: options.quality }),
+      Math.min(HARD_EXTRACT_MS, 45000),
+      'FALLBACK_EXTRACTION_TIMEOUT'
+    );
+    if (fallback.success) {
+      return {
+        ...fallback,
+        duration: (primary?.duration || 0) + (fallback.duration || 0),
+        diagnostics: { ...(primary?.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: true, fallbackDiagnostics: fallback.diagnostics },
+        source: 'vd-pro-fallback'
+      };
+    }
+    if (primary) {
+      return { ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackDiagnostics: fallback.diagnostics, fallbackErrorCode: fallback.errorCode } };
+    }
+    return fallback;
+  } catch (error) {
+    if (primary) return { ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message, fallbackErrorCode: error.code || 'FALLBACK_ERROR' } };
+    return { success: false, error: primaryError?.message || error.message, errorCode: primaryError?.code || error.code || 'EXTRACTION_ERROR', diagnostics: { fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message } };
+  } finally {
+    if (fallbackCtx) browserPool.release(fallbackCtx);
+  }
+}
+
 async function processExtractionJob(job) {
   let ctx = null;
   let proxy = null;
@@ -2426,7 +2471,7 @@ async function processExtractionJob(job) {
           error: 'Only informational pages found; no watch candidate to extract'
         };
       }
-      const extraction = await new VideoExtractor().extract(preferred.url, page, userId, {
+      const extraction = await extractWithFallback(preferred.url, page, proxy, userId, {
         quality: job.data.quality,
         deep: job.data.deep
       });
@@ -2443,7 +2488,7 @@ async function processExtractionJob(job) {
       };
     }
 
-    const result = await new VideoExtractor().extract(job.data.url, page, userId, {
+    const result = await extractWithFallback(job.data.url, page, proxy, userId, {
       quality: job.data.quality,
       deep: job.data.deep
     });
