@@ -1064,14 +1064,21 @@ class ResultValidator {
   static inspect(url, status, contentType, body = '', contentLength = null) {
     if (isJunkMediaUrl(url)) return { valid: false, reason: 'JUNK_OR_PLACEHOLDER', status, contentType };
     if (status < 200 || status >= 400) return { valid: false, reason: 'INVALID_STATUS', status, contentType };
+    const isMp4 = /\.mp4(?:\?|#|$)/i.test(url);
+    const binary = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ''), 'utf8');
+    const textPreview = binary.subarray(0, 16384).toString('utf8');
+    const mp4Signature = binary.subarray(0, 16384).includes(Buffer.from('ftyp'));
     if (/\.m3u8(?:\?|#|$)/i.test(url) && !String(body || '').includes('#EXTM3U')) {
       return { valid: false, reason: 'INVALID_M3U8', status, contentType };
     }
     if (/\.mpd(?:\?|#|$)/i.test(url) && !/<MPD[\s>]/i.test(String(body || ''))) {
       return { valid: false, reason: 'INVALID_MPD', status, contentType };
     }
-    if (/\.mp4(?:\?|#|$)/i.test(url) && (/text\/html|application\/json/i.test(String(contentType || '')) || /^\s*<(?:!doctype|html|body)\b/i.test(String(body || '')))) {
+    if (isMp4 && (/text\/html|application\/json/i.test(String(contentType || '')) || /^\s*<(?:!doctype|html|body)\b/i.test(textPreview) || /^\s*[<{][\s\S]{0,200}/.test(textPreview) && !mp4Signature)) {
       return { valid: false, reason: 'HTML_NOT_MEDIA', status, contentType };
+    }
+    if (isMp4 && !(/^(?:video\/mp4|video\/|application\/octet-stream)/i.test(String(contentType || '')) || mp4Signature || /bytes\s+\d+-\d+\//i.test(String(contentType || '')))) {
+      return { valid: false, reason: 'MP4_SIGNATURE_OR_TYPE_MISSING', status, contentType };
     }
     if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(String(body || ''))) {
       return { valid: false, reason: 'DRM_OR_ENCRYPTED_HLS', status, contentType, drmSuspected: true };
@@ -1091,12 +1098,12 @@ class ResultValidator {
         timeout: 7000,
         failOnStatusCode: false,
         maxRedirects: 4,
-        headers: { Accept: '*/*', ...(referer ? { Referer: referer } : {}) }
+        headers: { Accept: 'video/mp4,application/vnd.apple.mpegurl,application/dash+xml,*/*', Range: 'bytes=0-16383', ...(referer ? { Referer: referer } : {}) }
       });
       const headers = response.headers() || {};
       const contentType = headers['content-type'] || '';
       const cl = headers['content-length'] ? parseInt(headers['content-length'], 10) : null;
-      const body = /m3u8|mpd|manifest|playlist/i.test(url) || /text\/html|application\/json/i.test(contentType) ? await response.text().catch(() => '') : '';
+      const body = await response.body().catch(() => Buffer.alloc(0));
       return this.inspect(url, response.status(), contentType, body, cl);
     } catch (e) {
       return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
@@ -1115,7 +1122,8 @@ class ResultValidator {
       const headers = {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        Range: 'bytes=0-8192'
+        Accept: 'video/mp4,application/vnd.apple.mpegurl,application/dash+xml,*/*',
+        Range: 'bytes=0-16383'
       };
       if (referer) {
         headers.Referer = referer;
@@ -1127,6 +1135,7 @@ class ResultValidator {
         timeout: 10000,
         maxRedirects: 3,
         maxContentLength: 250000,
+        responseType: 'arraybuffer',
         validateStatus: () => true,
         headers
       });
