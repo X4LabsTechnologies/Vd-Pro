@@ -2503,6 +2503,7 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
 }
 
 async function processExtractionJob(job) {
+  const jobStartedAt = Date.now();
   let ctx = null;
   let proxy = null;
   try {
@@ -2557,8 +2558,7 @@ async function processExtractionJob(job) {
       const watchCandidates = results.filter(
         (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12
       );
-      const preferred = watchCandidates[0];
-      if (!preferred) {
+      if (!watchCandidates.length) {
         return {
           success: false,
           query: job.data.search,
@@ -2566,23 +2566,43 @@ async function processExtractionJob(job) {
           infoCandidates,
           searchResults: results.slice(0, 10),
           errorCode: 'NO_WATCH_CANDIDATE',
-          error: 'Only informational pages found; no watch candidate to extract'
+          error: 'Only informational pages found; no matching watch page to extract'
         };
       }
-      const extraction = applyMediaFlowProxy(await extractWithFallback(preferred.url, page, proxy, userId, {
-        quality: job.data.quality,
-        deep: job.data.deep
-      }));
+      const candidateAttempts = [];
+      let selected = null;
+      for (const candidate of watchCandidates.slice(0, 5)) {
+        const remaining = Math.max(20000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - jobStartedAt) - 5000);
+        if (remaining < 12000 && candidateAttempts.length) break;
+        try {
+          const candidateResult = await withTimeout(
+            extractWithFallback(candidate.url, page, proxy, userId, {
+              quality: job.data.quality,
+              deep: job.data.deep
+            }),
+            Math.min(HARD_EXTRACT_MS + 30000, remaining),
+            'SEARCH_CANDIDATE_TIMEOUT'
+          );
+          const routed = applyMediaFlowProxy(candidateResult);
+          candidateAttempts.push({ url: candidate.url, name: candidate.name, success: !!routed?.success, errorCode: routed?.errorCode || null });
+          selected = { candidate, extraction: routed };
+          if (routed?.success) break;
+        } catch (error) {
+          candidateAttempts.push({ url: candidate.url, name: candidate.name, success: false, errorCode: error.code || 'SEARCH_CANDIDATE_ERROR' });
+        }
+      }
+      const chosen = selected || { candidate: watchCandidates[0], extraction: { success: false, errorCode: 'SEARCH_CANDIDATES_EXHAUSTED', error: 'Matching watch pages could not be extracted' } };
       return {
-        success: !!extraction.success,
+        success: !!chosen.extraction.success,
         query: job.data.search,
-        matchedName: preferred.name,
-        matchedUrl: preferred.url,
-        pageUrl: preferred.pageUrl || preferred.url,
+        matchedName: chosen.candidate.name,
+        matchedUrl: chosen.candidate.url,
+        pageUrl: chosen.candidate.pageUrl || chosen.candidate.url,
         watchCandidates: watchCandidates.slice(0, 10),
         infoCandidates: infoCandidates.slice(0, 10),
         searchResults: results.slice(0, 10),
-        extraction
+        candidateAttempts,
+        extraction: chosen.extraction
       };
     }
 
