@@ -75,6 +75,7 @@ REDIS_URL=redis://default:PASSWORD@HOST:PORT
 | `BROWSER_POOL_COUNT` | `1` | عدد عمليات Chromium |
 | `BROWSER_CONTEXTS_PER_POOL` | `2` | عدد سياقات المتصفح لكل عملية |
 | `HARD_EXTRACT_MS` | `110000` | الحد الأقصى لعملية الاستخراج بالميلي ثانية |
+| `JOB_PROCESS_TIMEOUT_MS` | محسوب تلقائيًا | المهلة الخارجية للمهمة؛ يمكن ضبطها من Render |
 | `HARD_SEARCH_MS` | `30000` | الحد الأقصى للبحث بالميلي ثانية |
 | `NAV_TIMEOUT_MS` | `45000` | مهلة فتح الصفحة بالميلي ثانية |
 | `MEDIA_IDLE_WAIT_MS` | `8000` | مدة انتظار استقرار طلبات الوسائط بعد التفاعل |
@@ -104,7 +105,7 @@ MEDIAFLOW_PROXY_PASSWORD=كلمة_المرور_الفعلية
 MEDIAFLOW_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 ```
 
-يُرسل `h_referer` من سياق الرابط المكتشف، ويُرسل `h_user-agent` من الإعداد أعلاه. تُحفظ قيمة الرابط الخام في `linkMeta.originalUrl`، ويُوضع رابط MediaFlow في `linkMeta.proxyUrl`، بينما تبقى روابط MP4 وWebM وDASH دون إعادة توجيه لأن إعداد MediaFlow الموصوف هنا خاص بمسار HLS. لا يتم اختبار خادم MediaFlow تلقائيًا؛ تظهر حالة التفعيل فقط في health عبر `mediaFlow.configured`.
+يُرسل `h_referer` من سياق الرابط المكتشف، ويُرسل `h_user-agent` من الإعداد أعلاه. ويتحقق محرك MP4 من استجابة Range الثنائية، وتوقيع `ftyp` عند توفره، ونوع المحتوى، مع رفض HTML/JSON والحالات HTTP غير الصالحة بدل قبول أي رابط يحمل امتداد `.mp4`. تُحفظ قيمة الرابط الخام في `linkMeta.originalUrl`، ويُوضع رابط MediaFlow في `linkMeta.proxyUrl`، بينما تبقى روابط MP4 وWebM وDASH دون إعادة توجيه لأن إعداد MediaFlow الموصوف هنا خاص بمسار HLS. لا يتم اختبار خادم MediaFlow تلقائيًا؛ تظهر حالة التفعيل فقط في health عبر `mediaFlow.configured`.
 
 ## تشغيل Render
 

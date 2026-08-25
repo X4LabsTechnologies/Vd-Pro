@@ -15,7 +15,12 @@ export function mediaFlowProxyConfig(env = process.env) {
   const baseUrl = cleanBase(env.MEDIAFLOW_PROXY_URL || DEFAULT_PROXY_URL);
   const password = String(env.MEDIAFLOW_PROXY_PASSWORD || env.MEDIAFLOW_API_PASSWORD || env.APP__AUTH__API_PASSWORD || '').trim();
   const userAgent = String(env.MEDIAFLOW_USER_AGENT || DEFAULT_USER_AGENT).trim();
-  const enabled = Boolean(baseUrl && password);
+  let validBaseUrl = false;
+  try {
+    const parsed = new URLParser(baseUrl);
+    validBaseUrl = ['http:', 'https:'].includes(parsed.protocol) && !parsed.search && !parsed.hash;
+  } catch {}
+  const enabled = Boolean(validBaseUrl && password);
   return { enabled, baseUrl, password, userAgent };
 }
 

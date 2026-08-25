@@ -65,7 +65,8 @@ const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
 const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
 const FALLBACK_BUDGET_MS = envMs('FALLBACK_BUDGET_MS', 30000, 5000, 90000);
-const JOB_PROCESS_TIMEOUT_MS = Math.max(HARD_EXTRACT_MS + FALLBACK_BUDGET_MS + 15000, HARD_SEARCH_MS + 15000);
+const JOB_PROCESS_TIMEOUT_DEFAULT_MS = Math.max(HARD_EXTRACT_MS + FALLBACK_BUDGET_MS + 15000, HARD_SEARCH_MS + 15000);
+const JOB_PROCESS_TIMEOUT_MS = envMs('JOB_PROCESS_TIMEOUT_MS', JOB_PROCESS_TIMEOUT_DEFAULT_MS, 15000, 15 * 60 * 1000);
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
 const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
 const BROWSER_POOL_COUNT = Math.max(1, Math.min(4, parseInt(process.env.BROWSER_POOL_COUNT || '1', 10)));
@@ -1061,7 +1062,7 @@ async function scrapePlayerConfigs(page) {
 }
 
 class ResultValidator {
-  static inspect(url, status, contentType, body = '', contentLength = null) {
+  static inspect(url, status, contentType, body = '', contentLength = null, contentRange = '') {
     if (isJunkMediaUrl(url)) return { valid: false, reason: 'JUNK_OR_PLACEHOLDER', status, contentType };
     if (status < 200 || status >= 400) return { valid: false, reason: 'INVALID_STATUS', status, contentType };
     const isMp4 = /\.mp4(?:\?|#|$)/i.test(url);
@@ -1077,7 +1078,7 @@ class ResultValidator {
     if (isMp4 && (/text\/html|application\/json/i.test(String(contentType || '')) || /^\s*<(?:!doctype|html|body)\b/i.test(textPreview) || /^\s*[<{][\s\S]{0,200}/.test(textPreview) && !mp4Signature)) {
       return { valid: false, reason: 'HTML_NOT_MEDIA', status, contentType };
     }
-    if (isMp4 && !(/^(?:video\/mp4|video\/|application\/octet-stream)/i.test(String(contentType || '')) || mp4Signature || /bytes\s+\d+-\d+\//i.test(String(contentType || '')))) {
+    if (isMp4 && !(/^(?:video\/mp4|video\/)/i.test(String(contentType || '')) || mp4Signature || (/^application\/octet-stream/i.test(String(contentType || '')) && (mp4Signature || /bytes\s+\d+-\d+\//i.test(String(contentRange || '')))))) {
       return { valid: false, reason: 'MP4_SIGNATURE_OR_TYPE_MISSING', status, contentType };
     }
     if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(String(body || ''))) {
@@ -1104,7 +1105,7 @@ class ResultValidator {
       const contentType = headers['content-type'] || '';
       const cl = headers['content-length'] ? parseInt(headers['content-length'], 10) : null;
       const body = await response.body().catch(() => Buffer.alloc(0));
-      return this.inspect(url, response.status(), contentType, body, cl);
+      return this.inspect(url, response.status(), contentType, body, cl, headers['content-range'] || '');
     } catch (e) {
       return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
     }
@@ -1145,7 +1146,7 @@ class ResultValidator {
         const m = /\/(\d+)/.exec(String(clHeader)) || /^(\d+)$/.exec(String(clHeader));
         if (m) cl = parseInt(m[1], 10);
       }
-      return this.inspect(url, res.status, res.headers?.['content-type'] || '', res.data || '', cl);
+      return this.inspect(url, res.status, res.headers?.['content-type'] || '', res.data || '', cl, res.headers?.['content-range'] || '');
     } catch (e) {
       return { valid: false, reason: 'VALIDATION_FAILED' };
     }
