@@ -1843,6 +1843,7 @@ class SearchProvider {
     const s = String(source || '').toLowerCase();
     return (
       /wikipedia\.org|imdb\.com|themoviedb\.org|rottentomatoes\.com|fandom\.com|facebook\.com|instagram\.com/.test(u) ||
+      /login|signin|sign-in|signup|sign-up|account|myaccount|myapps|microsoft\.com|auth|oauth|sso|admin|dashboard|portal/.test(u) ||
       /wikipedia|tmdb|imdb|omdb/.test(s) ||
       /\/wiki\/|\/person\//.test(u)
     );
@@ -1862,7 +1863,7 @@ class SearchProvider {
       ? 0.15
       : 0;
     const informationPenalty =
-      /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram/.test(d) ? 0.25 : 0;
+      /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram|login|signin|sign-in|signup|sign-up|account|myapps|auth|oauth|sso|admin|dashboard|portal/.test(d) ? 0.35 : 0;
     const score = Math.max(0, rawScore + watchBoost - informationPenalty);
     const candidateClass = infoCandidate ? 'info' : 'watch';
     const prev = map.get(url);
