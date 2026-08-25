@@ -1843,7 +1843,7 @@ class SearchProvider {
     const s = String(source || '').toLowerCase();
     return (
       /wikipedia\.org|imdb\.com|themoviedb\.org|rottentomatoes\.com|fandom\.com|facebook\.com|instagram\.com/.test(u) ||
-      /login|signin|sign-in|signup|sign-up|account|myaccount|myapps|microsoft\.com|auth|oauth|sso|admin|dashboard|portal/.test(u) ||
+      /login|signin|sign-in|signup|sign-up|account|myaccount|myapps|microsoft\.com|myactivity\.google\.com|accounts\.google\.com|auth|oauth|sso|admin|dashboard|portal/.test(u) ||
       /wikipedia|tmdb|imdb|omdb/.test(s) ||
       /\/wiki\/|\/person\//.test(u)
     );
@@ -2493,7 +2493,7 @@ async function processExtractionJob(job) {
         'SEARCH_TIMEOUT'
       );
       const sp = new SearchProvider();
-      const watchCandidates = results.filter((r) => !sp.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info');
+      const watchCandidates = results.filter((r) => !sp.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info' && Number(r.matchScore ?? 0) >= 0.12);
       const infoCandidates = results.filter((r) => sp.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info');
       return {
         success: results.length > 0,
@@ -2533,7 +2533,7 @@ async function processExtractionJob(job) {
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
       const watchCandidates = results.filter(
-        (r) => !searchProvider.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info'
+        (r) => !searchProvider.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info' && Number(r.matchScore ?? 0) >= 0.12
       );
       const preferred = watchCandidates[0];
       if (!preferred) {
