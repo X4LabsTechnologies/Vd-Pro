@@ -990,7 +990,7 @@ function mediaResponsePredicate(res) {
     const u = res.url();
     if (!u || isRejectedMediaUrl(u) || isJunkMediaUrl(u)) return false;
     const ct = String(res.headers?.()['content-type'] || '').toLowerCase();
-    return /\.m3u8(?:\?|#|$)/i.test(u) || /\.mpd(?:\?|#|$)/i.test(u) || /\.mp4(?:\?|#|$)/i.test(u) || /\/(?:manifest|playlist|master|stream)(?:\/|\?|$)/i.test(u) || /mpegurl|dash\+xml|application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|^video\//i.test(ct);
+    return /\.m3u8(?:\?|#|$)/i.test(u) || /\.mpd(?:\?|#|$)/i.test(u) || /\.mp4(?:\?|#|$)/i.test(u) || /\/(?:manifest|playlist|master|stream)(?:\/|\?|$)/i.test(u) || /mpegurl|dash\+xml|application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|^video\//i.test(ct) || (/json/i.test(ct) && /config|player|source|stream|media|video/i.test(u));
   } catch (e) {
     return false;
   }
@@ -1050,7 +1050,7 @@ async function scrapePlayerConfigs(page) {
         if (window.Clappr && window.Clappr.Player) walk(window.player, 0);
       } catch (e) {}
       try {
-        [window.__INITIAL_STATE__, window.__NEXT_DATA__, window.playerConfig, window.config, window.videoConfig].forEach(
+        [window.__INITIAL_STATE__, window.__NEXT_DATA__, window.playerConfig, window.config, window.videoConfig, window.player, window.video, window.__PLAYER_CONFIG__, window.__PLAYER_STATE__, window.__VIDEO_CONFIG__].forEach(
           (x) => walk(x, 0)
         );
       } catch (e) {}
@@ -1259,7 +1259,9 @@ class VideoExtractor {
       drmSuspected: false,
       mseDetected: false,
       timedOut: false,
-      softRetry: false
+      softRetry: false,
+      blobDetected: false,
+      adaptiveDeep: false
     };
 
     const result = {
@@ -1324,10 +1326,18 @@ class VideoExtractor {
         const lowerType = String(ct).toLowerCase();
         if (lowerType.includes('text/') || lowerType.includes('json') || lowerType.includes('octet-stream')) {
           const path = u.toLowerCase();
-          if (/manifest|playlist|stream|media|video|source|player|config|\.json(?:\?|$)/i.test(path)) {
+          if (/manifest|playlist|stream|media|video|source|player|config|\.json(?:\?|$)/i.test(path) || lowerType.includes('json')) {
             const body = await response.text().catch(() => '');
             if (/^\s*#EXTM3U/m.test(body) || /<MPD[\s>]/i.test(body)) this.add(bags, u, ct);
             if (/EXT-X-KEY:.*METHOD=(?!NONE)/i.test(body)) diagnostics.drmSuspected = true;
+            if (lowerType.includes('json') && body.length <= 2_000_000) {
+              const embedded = extractUrlCandidates(body, u);
+              for (const candidate of embedded) {
+                if (/^blob:/i.test(candidate)) diagnostics.blobDetected = true;
+                else this.add(bags, candidate);
+              }
+              if (embedded.length) diagnostics.strategies.push('json-media-config');
+            }
           }
         }
       } catch (e) {}
@@ -1379,7 +1389,10 @@ class VideoExtractor {
           (window.__vdCaptured || []).forEach((x) => out.push(x.url));
           return out;
         });
-        mediaUrls.forEach((u) => this.add(bags, u));
+        mediaUrls.forEach((u) => {
+          if (/^blob:/i.test(String(u || ''))) diagnostics.blobDetected = true;
+          else this.add(bags, u);
+        });
         const signals = await page.evaluate(() => ({
           mse: !!(window.__vdSignals && window.__vdSignals.mse),
           eme: !!(window.__vdSignals && window.__vdSignals.eme)
@@ -1493,6 +1506,17 @@ class VideoExtractor {
         await forceHtml5Play(page);
         await sleep(deep ? 6500 : 3200);
         await harvestDomAndHooks('r2');
+      }
+
+      // Adaptive deep pass: delayed players may expose media only after a second interaction.
+      if (!deep && diagnostics.mediaRequests > 0 && !hasPlayable()) {
+        diagnostics.adaptiveDeep = true;
+        await activateLazyIframes(page);
+        diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
+        diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
+        await forceHtml5Play(page);
+        await sleep(3000);
+        await harvestDomAndHooks('adaptive-deep');
       }
 
       // Embed / iframe probe
