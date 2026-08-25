@@ -1838,12 +1838,17 @@ class VideoExtractor {
 }
 
 class SearchProvider {
-  isInfoCandidate(url = '', source = '') {
+  static TITLE_STOPWORDS = new Set([
+    'watch', 'stream', 'online', 'episode', 'season', 'movie', 'movies', 'series', 'film', 'films', 'play', 'embed', 'player', 'video', 'full', 'hd', 'web', ' مترجم', 'فيلم', 'مسلسل', 'حلقة', 'مشاهدة', 'تحميل', 'مباشر', 'الحلقة', 'الموسم'
+  ]);
+
+  isInfoCandidate(url = '', source = '', title = '') {
     const u = String(url || '').toLowerCase();
     const s = String(source || '').toLowerCase();
     return (
       /wikipedia\.org|imdb\.com|themoviedb\.org|rottentomatoes\.com|fandom\.com|facebook\.com|instagram\.com/.test(u) ||
       /login|signin|sign-in|signup|sign-up|account|myaccount|myapps|microsoft\.com|myactivity\.google\.com|accounts\.google\.com|auth|oauth|sso|admin|dashboard|portal/.test(u) ||
+      /guide|watch[- ]?order|review|news|trailer|price|marketcap|blockchain|crypto|article|blog/.test((u + ' ' + String(title || '')).toLowerCase()) ||
       /wikipedia|tmdb|imdb|omdb/.test(s) ||
       /\/wiki\/|\/person\//.test(u)
     );
@@ -1853,7 +1858,7 @@ class SearchProvider {
     const url = item.url;
     if (!url || !/^https?:\/\//i.test(url)) return;
     if (/duckduckgo\.com|google\.[a-z.]+\/search|bing\.com\/search|wikipedia\.org\/w\/api/i.test(url)) return;
-    const infoCandidate = this.isInfoCandidate(url, item.source);
+    const infoCandidate = this.isInfoCandidate(url, item.source, item.title || item.name);
     const rawScore =
       (item.score != null ? item.score : titleSimilarity(item.query || '', item.title || item.name || '')) +
       (item.boost || 0);
@@ -2081,6 +2086,23 @@ class SearchProvider {
     } catch (e) {
       logger.warn({ error: e.message }, 'OMDb failed');
     }
+  }
+
+  isWatchCandidate(item = {}) {
+    const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
+    if (this.isInfoCandidate(item.url, item.source, item.title || item.name)) return false;
+    return /watch|stream|online|episode|season|movie|movies|series|film|play|embed|player|video|\/movies?\//i.test(descriptor);
+  }
+
+  matchesRequestedTitle(query = '', item = {}) {
+    const tokens = String(query || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((token) => token.length > 1 && !SearchProvider.TITLE_STOPWORDS.has(token));
+    if (!tokens.length) return false;
+    const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
+    const hits = tokens.filter((token) => descriptor.includes(token));
+    const numeric = tokens.filter((token) => /^\d{4}$|^s\d+$|^e\d+$/i.test(token));
+    const numericHits = numeric.filter((token) => descriptor.includes(token));
+    if (numeric.length && numericHits.length !== numeric.length) return false;
+    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.6 : 1);
   }
 
   async searchByName(query) {
@@ -2493,7 +2515,7 @@ async function processExtractionJob(job) {
         'SEARCH_TIMEOUT'
       );
       const sp = new SearchProvider();
-      const watchCandidates = results.filter((r) => !sp.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info' && Number(r.matchScore ?? 0) >= 0.12);
+      const watchCandidates = results.filter((r) => sp.isWatchCandidate(r) && r.candidateClass !== 'info' && sp.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12);
       const infoCandidates = results.filter((r) => sp.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info');
       return {
         success: results.length > 0,
@@ -2533,7 +2555,7 @@ async function processExtractionJob(job) {
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
       const watchCandidates = results.filter(
-        (r) => !searchProvider.isInfoCandidate(r.url, r.source) && r.candidateClass !== 'info' && Number(r.matchScore ?? 0) >= 0.12
+        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12
       );
       const preferred = watchCandidates[0];
       if (!preferred) {
