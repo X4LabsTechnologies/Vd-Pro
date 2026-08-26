@@ -1,4 +1,4 @@
-# Vd-Pro v4.4.0
+# Vd-Pro v4.5.0
 
 محرك عام لاكتشاف واستخراج وسائط الفيديو من صفحات الويب باستخدام Node.js وPlaywright. يدعم اكتشاف روابط HLS وDASH وMP4 وWebM، وتحليل الجودات والترجمات، ومراقبة طلبات الشبكة، وفحص DOM وJavaScript وiframes، مع الحفاظ على واجهات API الحالية وعدم إضافة منطق خاص بموقع معيّن.
 
@@ -8,7 +8,7 @@
 
 | العنصر | الحالة |
 |---|---|
-| الإصدار | `4.4.0` |
+| الإصدار | `4.5.0` |
 | نقطة التشغيل | `server.js` |
 | قاعدة البيانات | MongoDB اختيارية للتشغيل الأساسي، ومستخدمة للمستخدمين والحفظ عند ضبطها |
 | الطابور | Bull فوق Redis |
@@ -16,7 +16,7 @@
 | المصادقة | JWT عبر `Authorization: Bearer TOKEN` |
 | البحث | DuckDuckGo API وDuckDuckGo HTML وBing وWikipedia، مع TMDB وOMDb اختياريًا |
 | التخزين المؤقت | ذاكرة العملية، Redis، وMongoDB عند توفرها |
-| الاختبارات | فحص صياغة Node وفحص الفرق متاحان |
+| الاختبارات | فحص صياغة Node وفحص الفرق واختبارات MediaFlow المحلية متاحة |
 
 ## وحدة الاستخراج الاحتياطية
 
@@ -105,7 +105,7 @@ MEDIAFLOW_PROXY_PASSWORD=كلمة_المرور_الفعلية
 MEDIAFLOW_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 ```
 
-يُرسل `h_referer` من سياق الرابط المكتشف، ويُرسل `h_user-agent` من الإعداد أعلاه. ويتحقق محرك MP4 من استجابة Range الثنائية، وتوقيع `ftyp` عند توفره، ونوع المحتوى، مع رفض HTML/JSON والحالات HTTP غير الصالحة بدل قبول أي رابط يحمل امتداد `.mp4`. تُحفظ قيمة الرابط الخام في `linkMeta.originalUrl`، ويُوضع رابط MediaFlow في `linkMeta.proxyUrl`، بينما تبقى روابط MP4 وWebM وDASH دون إعادة توجيه لأن إعداد MediaFlow الموصوف هنا خاص بمسار HLS. لا يتم اختبار خادم MediaFlow تلقائيًا؛ تظهر حالة التفعيل فقط في health عبر `mediaFlow.configured`.
+يُرسل `h_referer` من سياق الرابط المكتشف، ويُرسل `h_user-agent` من الإعداد أعلاه. عند توفر أكثر من بروكسي، يمكن للمحرك تبديل البروكسي وإعادة محاولة واحدة داخل ميزانية المهمة عند غياب الوسائط أو فشل التحقق، وتظهر النتيجة في `diagnostics.proxyUsed` و`proxySwitched` و`proxyErrors`. ويتحقق محرك MP4 من استجابة Range الثنائية، وتوقيع `ftyp` عند توفره، ونوع المحتوى، مع رفض HTML/JSON والحالات HTTP غير الصالحة بدل قبول أي رابط يحمل امتداد `.mp4`. تُحفظ قيمة الرابط الخام في `linkMeta.originalUrl`، ويُوضع رابط MediaFlow في `linkMeta.proxyUrl`، بينما تبقى روابط MP4 وWebM وDASH دون إعادة توجيه لأن إعداد MediaFlow الموصوف هنا خاص بمسار HLS. لا يتم اختبار خادم MediaFlow تلقائيًا؛ تظهر حالة التفعيل فقط في health عبر `mediaFlow.configured`.
 
 ## تشغيل Render
 
@@ -151,7 +151,7 @@ GET /api/v1/health
   "status": "healthy",
   "ready": true,
   "name": "Vd-Pro",
-  "version": "4.4.0",
+  "version": "4.5.0",
   "redis": "ready",
   "mongodb": "connected",
   "searchProviders": {

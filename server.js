@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.4.0 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.5.0 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -683,9 +683,9 @@ class ProxyManager {
     return proxy.health;
   }
   async checkAll() { return Promise.all(this.proxies.map((p) => this.checkOne(p))); }
-  getNext() {
+  getNext(exclude = null) {
     if (!this.proxies.length) return null;
-    const ok = this.proxies.filter((p) => p.health.available);
+    const ok = this.proxies.filter((p) => p.health.available && (!exclude || p.id !== exclude.id));
     if (!ok.length) return null;
     return ok[Math.floor(Math.random() * ok.length)];
   }
@@ -2307,7 +2307,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.4.0',
+    version: '4.5.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2455,7 +2455,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.4.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.5.0' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -2630,10 +2630,48 @@ async function processExtractionJob(job) {
       };
     }
 
-    const result = applyMediaFlowProxy(await extractWithFallback(job.data.url, page, proxy, userId, {
+    const runOnCurrentProxy = async () => applyMediaFlowProxy(await extractWithFallback(job.data.url, ctx.page, proxy, userId, {
       quality: job.data.quality,
       deep: job.data.deep
     }));
+
+    let result = await runOnCurrentProxy();
+    const initialDiagnostics = { ...(result.diagnostics || {}) };
+    initialDiagnostics.proxyUsed = proxy ? { id: proxy.id } : null;
+    initialDiagnostics.proxySwitched = false;
+    initialDiagnostics.proxyErrors = [];
+    result.diagnostics = initialDiagnostics;
+
+    const mediaRequests = Number(initialDiagnostics.mediaRequests || 0);
+    const shouldProxyRetry = !result.success && PROXIES.length > 1 && (
+      mediaRequests === 0 || result.errorCode === 'NO_STREAM_FOUND' || result.errorCode === 'STREAM_FOUND_BUT_UNPLAYABLE'
+    ) && !initialDiagnostics.captchaSuspected && !initialDiagnostics.drmSuspected;
+    if (shouldProxyRetry) {
+      const retryProxy = proxyManager.getNext(proxy);
+      const remaining = JOB_PROCESS_TIMEOUT_MS - (Date.now() - jobStartedAt);
+      if (retryProxy && remaining > 20000) {
+        const firstError = result.errorCode || initialDiagnostics.failureClass || 'PROXY_RETRY_TRIGGERED';
+        browserPool.release(ctx);
+        ctx = null;
+        proxy = retryProxy;
+        try {
+          ctx = await browserPool.get(proxy);
+          const retried = await withTimeout(runOnCurrentProxy(), Math.min(HARD_EXTRACT_MS, remaining - 5000), 'PROXY_RETRY_TIMEOUT');
+          const retryDiagnostics = { ...(retried.diagnostics || {}) };
+          retryDiagnostics.proxyUsed = { id: proxy.id };
+          retryDiagnostics.proxySwitched = true;
+          retryDiagnostics.proxyErrors = [firstError];
+          retryDiagnostics.previousAttempt = initialDiagnostics;
+          retried.diagnostics = retryDiagnostics;
+          result = retried;
+        } catch (retryError) {
+          initialDiagnostics.proxySwitched = true;
+          initialDiagnostics.proxyErrors = [firstError, retryError.code || retryError.message || 'PROXY_RETRY_FAILED'];
+          initialDiagnostics.retryProxy = { id: retryProxy.id };
+          result.diagnostics = initialDiagnostics;
+        }
+      }
+    }
 
     metrics.extractionDuration.labels(result.success ? 'success' : 'failure').observe(result.duration || 0);
     if (result.success) {
@@ -2767,13 +2805,13 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.4.0 listening on :' + PORT);
-  console.log('VD-PRO v4.4.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.5.0 listening on :' + PORT);
+  console.log('VD-PRO v4.5.0 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.4.0 starting...');
+    logger.info('Vd-Pro v4.5.0 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);

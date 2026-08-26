@@ -87,10 +87,27 @@ function parseDash(manifest, base) {
 
 export async function runFallbackExtraction({ page, pageUrl, deep = false, quality: requestedQuality = 'auto', cookies = [], headers = {} }) {
   const found = new Map(), subtitles = new Map(), referers = new Map(), responseBodies = new Map(), mediaKeys = new Set();
-  const diagnostics = { fallback: true, requestsObserved: 0, mediaRequests: 0, framesVisited: 0, strategies: [], timedOut: false, responseMediaCandidates: 0, validatedCandidates: 0 };
+  const diagnostics = { fallback: true, requestsObserved: 0, mediaRequests: 0, framesVisited: 0, framesAttached: 0, playClicked: false, tabsClicked: 0, lazyIframes: 0, strategies: [], timedOut: false, captchaSuspected: false, drmSuspected: false, mseDetected: false, responseMediaCandidates: 0, validatedCandidates: 0, validationCandidates: 0, mediaSignal: 'no-media-requests', proxyUsed: null, proxySwitched: false, proxyErrors: [], fallbackAttempted: true, fallbackSucceeded: false };
   const add = (u, ref = pageUrl) => { const abs = resolveUrl(pageUrl, u); if (!abs || JUNK_RE.test(abs)) return; if (SUB_RE.test(abs)) subtitles.set(key(abs), { url: abs, language: subtitleLanguage(abs) || null, label: subtitleLanguage(abs) || 'subtitle', type: 'file' }); else if (MEDIA_RE.test(abs)) { found.set(key(abs), abs); referers.set(key(abs), ref); } };
   const onReq = (req) => { diagnostics.requestsObserved++; const u = req.url(); if (MEDIA_RE.test(u) || SUB_RE.test(u)) { const k = key(u); if (!mediaKeys.has(k)) { mediaKeys.add(k); diagnostics.mediaRequests++; } add(u, req.headers().referer || pageUrl); } };
-  const onRes = async (res) => { try { const u = res.url(); const ct = String(res.headers()['content-type'] || '').toLowerCase(); if (MEDIA_RE.test(u) || SUB_RE.test(u) || /mpegurl|dash\+xml|video\//i.test(ct)) { add(u, pageUrl); diagnostics.responseMediaCandidates++; if (/mpegurl|dash\+xml|json|text\//i.test(ct)) responseBodies.set(key(u), await res.text().catch(() => '')); } } catch {} };
+  const onRes = async (res) => {
+    try {
+      const u = res.url();
+      const ct = String(res.headers()['content-type'] || '').toLowerCase();
+      if (MEDIA_RE.test(u) || SUB_RE.test(u) || /mpegurl|dash\+xml|video\//i.test(ct)) {
+        add(u, pageUrl);
+        diagnostics.responseMediaCandidates++;
+        if (/mpegurl|dash\+xml|json|text\//i.test(ct)) {
+          const body = await res.text().catch(() => '');
+          responseBodies.set(key(u), body);
+          if (/json|config|player|source|stream|media|video/i.test(`${ct} ${u}`) && body.length <= 2_000_000) {
+            collect(body, u, found);
+            if (/(?:https?:\/\/|\/\/)[^\s"'<>`\\]+/i.test(body)) diagnostics.strategies.push('fallback-json-media-config');
+          }
+        }
+      }
+    } catch {}
+  };
   page.on('request', onReq); page.on('response', onRes);
   if (cookies?.length) await page.context().addCookies(cookies).catch(() => {});
   try {
@@ -138,6 +155,8 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
     for (const v of batch) { if (v.validation.valid) { variants.push(v); diagnostics.validatedCandidates++; } }
   }
   diagnostics.validationCandidates = toValidate.length;
+  diagnostics.fallbackSucceeded = Boolean(variants.length);
+  diagnostics.mediaSignal = diagnostics.validatedCandidates > 0 ? 'validated' : diagnostics.mediaRequests > 0 ? 'media-requests-without-accepted-primary' : 'no-media-requests';
   variants.sort((a, b) => qualityScore(b.quality) - qualityScore(a.quality) || Number(b.bandwidth || 0) - Number(a.bandwidth || 0));
   const picked = variants.find((v) => requestedQuality === 'auto' || v.quality === requestedQuality) || variants[0];
   return { success: !!picked, primaryUrl: picked?.url || null, urls: { m3u8: variants.filter((v) => v.type === 'hls').map((v) => v.url), mp4: variants.filter((v) => v.type === 'mp4').map((v) => v.url), webm: variants.filter((v) => v.type === 'webm').map((v) => v.url), mpd: variants.filter((v) => v.type === 'dash').map((v) => v.url), segment: [], other: [] }, variants, subtitles: [...subtitles.values()], qualities: [...new Set(variants.map((v) => v.quality).filter((x) => x !== 'unknown'))], duration: 0, strategy: diagnostics.strategies.join('+'), quality: requestedQuality, validated: !!picked, linkMeta: picked ? linkMeta(picked.url, picked.referer) : null, error: picked ? null : 'Fallback extractor found no validated public media URL', errorCode: picked ? null : 'FALLBACK_NO_VALIDATED_STREAM', diagnostics, source: 'vd-pro-fallback', pageTitle: await page.title().catch(() => null), completedCleanly: true };
