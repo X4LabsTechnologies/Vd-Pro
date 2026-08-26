@@ -2643,8 +2643,10 @@ async function processExtractionJob(job) {
 
     let result = await runOnCurrentProxy();
     const initialDiagnostics = { ...(result.diagnostics || {}) };
+    initialDiagnostics.proxyConfigured = PROXIES.length > 0;
     initialDiagnostics.proxyUsed = proxy ? { id: proxy.id } : null;
     initialDiagnostics.proxySwitched = false;
+    initialDiagnostics.proxyError = null;
     initialDiagnostics.proxyErrors = [];
     result.diagnostics = initialDiagnostics;
 
@@ -2664,15 +2666,18 @@ async function processExtractionJob(job) {
           ctx = await browserPool.get(proxy);
           const retried = await withTimeout(runOnCurrentProxy(), Math.min(HARD_EXTRACT_MS, remaining - 5000), 'PROXY_RETRY_TIMEOUT');
           const retryDiagnostics = { ...(retried.diagnostics || {}) };
+          retryDiagnostics.proxyConfigured = true;
           retryDiagnostics.proxyUsed = { id: proxy.id };
           retryDiagnostics.proxySwitched = true;
+          retryDiagnostics.proxyError = null;
           retryDiagnostics.proxyErrors = [firstError];
           retryDiagnostics.previousAttempt = initialDiagnostics;
           retried.diagnostics = retryDiagnostics;
           result = retried;
         } catch (retryError) {
           initialDiagnostics.proxySwitched = true;
-          initialDiagnostics.proxyErrors = [firstError, retryError.code || retryError.message || 'PROXY_RETRY_FAILED'];
+          initialDiagnostics.proxyError = retryError.code || retryError.message || 'PROXY_RETRY_FAILED';
+          initialDiagnostics.proxyErrors = [firstError, initialDiagnostics.proxyError];
           initialDiagnostics.retryProxy = { id: retryProxy.id };
           result.diagnostics = initialDiagnostics;
         }
