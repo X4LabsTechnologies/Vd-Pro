@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.5.0 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.5.1 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -2313,7 +2313,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.5.0',
+    version: '4.5.1',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2461,7 +2461,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.5.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.5.1' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -2816,13 +2816,13 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.5.0 listening on :' + PORT);
-  console.log('VD-PRO v4.5.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.5.1 listening on :' + PORT);
+  console.log('VD-PRO v4.5.1 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.5.0 starting...');
+    logger.info('Vd-Pro v4.5.1 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
