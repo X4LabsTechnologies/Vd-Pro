@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.6.0 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.7.0 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -2142,12 +2142,36 @@ class SearchProvider {
     return hits.length / tokens.length >= (tokens.length >= 3 ? 0.6 : 1);
   }
 
-  async searchByName(query) {
+  normalizeSiteHint(site = '') {
+    const raw = String(site || '').trim();
+    if (!raw) return { raw: '', domain: '', tokens: [] };
+    let domain = '';
+    try {
+      const candidate = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw;
+      domain = new URLParser(candidate).hostname.toLowerCase().replace(/^www\./, '');
+      if (!domain.includes('.') || /[^a-z0-9.-]/i.test(domain)) domain = '';
+    } catch (e) {}
+    const tokens = raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').split(/\s+/).filter((x) => x.length > 1 && !['www','com','net','org','live','tv'].includes(x));
+    return { raw, domain, tokens };
+  }
+
+  siteMatches(item = {}, siteInfo = {}) {
+    if (!siteInfo.raw) return true;
+    const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
+    if (siteInfo.domain) {
+      try { return new URLParser(item.url).hostname.toLowerCase().replace(/^www\./, '').endsWith(siteInfo.domain); } catch (e) { return false; }
+    }
+    return siteInfo.tokens.length ? siteInfo.tokens.some((token) => descriptor.includes(token)) : true;
+  }
+
+  async searchByName(query, site = '') {
     const q = String(query || '').trim();
     if (!q) return [];
+    const siteInfo = this.normalizeSiteHint(site);
     const map = new Map();
-    const watchQuery = '"' + q + '" watch stream episode movie series';
-    const arabicWatchQuery = q + ' مشاهدة فيلم مسلسل حلقة';
+    const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
+    const watchQuery = '"' + scoped + q + '" watch stream episode movie series';
+    const arabicWatchQuery = scoped + q + ' مشاهدة فيلم مسلسل حلقة';
     await Promise.all([
       this.searchDuckDuckGoAPI(q, map),
       this.searchDuckDuckGoAPI(watchQuery, map),
@@ -2162,6 +2186,7 @@ class SearchProvider {
       this.searchOMDb(q, map)
     ]);
     let results = [...map.values()].sort((a, b) => b.score - a.score);
+    if (siteInfo.raw) results = results.filter((r) => this.siteMatches(r, siteInfo));
     const strong = results.filter((r) => r.score >= 0.12);
     if (strong.length >= 2) results = strong;
     return results.slice(0, 15).map((r, i) => ({
@@ -2333,7 +2358,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.6.0',
+    version: '4.7.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2413,7 +2438,7 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
 
 app.get('/api/v1/search', verifyToken, async (req, res) => {
   try {
-    const { q, extract, quality = 'auto', deep } = req.query;
+    const { q, site = '', extract, quality = 'auto', deep } = req.query;
     if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     const doExtract = extract === '1' || extract === 'true';
@@ -2422,6 +2447,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
         {
           type: doExtract ? 'search_extract' : 'search',
           search: String(q).trim(),
+          site: String(site || '').trim(),
           userId,
           quality,
           deep: deep === '1' || deep === 'true'
@@ -2435,6 +2461,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
       success: true,
       jobId: job.id,
       query: String(q).trim(),
+      ...(site ? { site: String(site).trim() } : {}),
       mode: doExtract ? 'search_and_extract' : 'search_only',
       statusUrl: '/api/v1/jobs/' + job.id
     });
@@ -2481,7 +2508,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.6.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.7.0' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -2563,7 +2590,7 @@ async function processExtractionJob(job) {
 
     if (job.data.type === 'search') {
       const results = await withTimeout(
-        new SearchProvider().searchByName(job.data.search),
+        new SearchProvider().searchByName(job.data.search, job.data.site),
         HARD_SEARCH_MS,
         'SEARCH_TIMEOUT'
       );
@@ -2596,7 +2623,7 @@ async function processExtractionJob(job) {
 
     if (job.data.type === 'search_extract') {
       const results = await withTimeout(
-        new SearchProvider().searchByName(job.data.search),
+        new SearchProvider().searchByName(job.data.search, job.data.site),
         HARD_SEARCH_MS,
         'SEARCH_TIMEOUT'
       );
@@ -2840,13 +2867,13 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.6.0 listening on :' + PORT);
-  console.log('VD-PRO v4.6.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.7.0 listening on :' + PORT);
+  console.log('VD-PRO v4.7.0 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.6.0 starting...');
+    logger.info('Vd-Pro v4.7.0 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);

@@ -1,4 +1,4 @@
-# Vd-Pro v4.6.0
+# Vd-Pro v4.7.0
 
 محرك عام لاكتشاف واستخراج وسائط الفيديو من صفحات الويب باستخدام Node.js وPlaywright. يدعم اكتشاف روابط HLS وDASH وMP4 وWebM، وتحليل الجودات والترجمات، ومراقبة طلبات الشبكة، وفحص DOM وJavaScript وiframes، مع الحفاظ على واجهات API الحالية وعدم إضافة منطق خاص بموقع معيّن.
 
@@ -8,7 +8,7 @@
 
 | العنصر | الحالة |
 |---|---|
-| الإصدار | `4.6.0` |
+| الإصدار | `4.7.0` |
 | نقطة التشغيل | `server.js` |
 | قاعدة البيانات | MongoDB اختيارية للتشغيل الأساسي، ومستخدمة للمستخدمين والحفظ عند ضبطها |
 | الطابور | Bull فوق Redis |
@@ -151,7 +151,7 @@ GET /api/v1/health
   "status": "healthy",
   "ready": true,
   "name": "Vd-Pro",
-  "version": "4.6.0",
+  "version": "4.7.0",
   "redis": "ready",
   "mongodb": "connected",
   "searchProviders": {
@@ -207,11 +207,11 @@ Authorization: Bearer YOUR_TOKEN
 ### البحث بالاسم
 
 ```http
-GET /api/v1/search?q=اسم%20الفيلم&extract=false&quality=auto&deep=false
+GET /api/v1/search?q=اسم%20الفيلم&site=example.com&extract=true&quality=auto&deep=true
 Authorization: Bearer YOUR_TOKEN
 ```
 
-بدون `extract=true` يعيد البحث النتائج ويفصل بين `watchCandidates` و`infoCandidates`. عند استخدام `extract=true` يحاول استخراج الوسائط من أفضل مرشح مشاهدة ويضع النتيجة داخل `extraction`.
+المعامل الاختياري `site` يقيّد البحث بنطاق الموقع الذي تكتبه، مثل `example.com` أو اسم نطاق كامل. يرسل المحرك استعلامات مشاهدة عامة، ثم يحتفظ فقط بالنتائج التي تطابق النطاق ويصنفها إلى `watchCandidates` و`infoCandidates`. عند استخدام `extract=true` يحاول استخراج الوسائط من أفضل مرشح مشاهدة مطابق، ولا يستخرج من صفحات المعلومات. عند غياب مرشح مشاهدة مطابق يعيد `NO_WATCH_CANDIDATE`. يبقى إرسال `url` مباشرة إلى `/api/v1/extract` مدعومًا كما هو.
 
 ### متابعة المهمة
 
