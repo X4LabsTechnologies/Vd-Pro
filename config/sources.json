@@ -46,7 +46,30 @@
     { "name": "AsianCrush", "url": "https://asiancrush.com", "enabled": true, "priority": 120 },
     { "name": "OceanVeil", "url": "https://oceanveil.net", "enabled": true, "priority": 130 }
   ],
-  "music": [],
+  "music": [
+    { "name": "MP3Juices", "url": "https://mp3juices.cc", "enabled": true, "priority": 10 },
+    { "name": "MP3Skull", "url": "https://mp3skull.to", "enabled": true, "priority": 20 },
+    { "name": "Tubidy", "url": "https://tubidy.com", "enabled": true, "priority": 30 },
+    { "name": "MyMP3", "url": "https://mymp3.net", "enabled": true, "priority": 40 },
+    { "name": "BeeMP3", "url": "https://beemp3.com", "enabled": true, "priority": 50 },
+    { "name": "MP3Paw", "url": "https://mp3paw.com", "enabled": true, "priority": 60 },
+    { "name": "OKmusi", "url": "https://okmusi.com", "enabled": true, "priority": 70 },
+    { "name": "MyGOMP3", "url": "https://anyukit.com", "enabled": true, "priority": 80 },
+    { "name": "Maktobat", "url": "https://maktobat.net", "enabled": true, "priority": 90 },
+    { "name": "Sma3na", "url": "https://sma3na.com", "enabled": true, "priority": 100 },
+    { "name": "Aghanina", "url": "https://aghanina.com", "enabled": true, "priority": 110 },
+    { "name": "Tarab", "url": "https://tarab.com", "enabled": true, "priority": 120 },
+    { "name": "Haneen", "url": "https://haneen.com", "enabled": true, "priority": 130 },
+    { "name": "Naghamati", "url": "https://naghamati.com", "enabled": true, "priority": 140 },
+    { "name": "Aghani MP3", "url": "https://aghani-mp3.net", "enabled": true, "priority": 150 },
+    { "name": "Gaana", "url": "https://gaana.com", "enabled": true, "priority": 160 },
+    { "name": "JioSaavn", "url": "https://jiosaavn.com", "enabled": true, "priority": 170 },
+    { "name": "Palco MP3", "url": "https://palcomp3.com", "enabled": true, "priority": 180 },
+    { "name": "Deezer", "url": "https://deezer.com", "enabled": true, "priority": 190 },
+    { "name": "Jamendo", "url": "https://jamendo.com", "enabled": true, "priority": 200 },
+    { "name": "BeeMP3s", "url": "https://beemp3s.net", "enabled": true, "priority": 210 },
+    { "name": "SoundCloud", "url": "https://soundcloud.com", "enabled": true, "priority": 220 }
+  ],
   "general_video": [],
   "documentary": []
 }
