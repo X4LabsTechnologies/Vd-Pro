@@ -68,7 +68,7 @@ const FALLBACK_BUDGET_MS = envMs('FALLBACK_BUDGET_MS', 30000, 5000, 90000);
 const JOB_PROCESS_TIMEOUT_DEFAULT_MS = Math.max(HARD_EXTRACT_MS + FALLBACK_BUDGET_MS + 15000, HARD_SEARCH_MS + 15000);
 const JOB_PROCESS_TIMEOUT_MS = envMs('JOB_PROCESS_TIMEOUT_MS', JOB_PROCESS_TIMEOUT_DEFAULT_MS, 15000, 15 * 60 * 1000);
 const WATCHDOG_INTERVAL_MS = Math.max(15000, parseInt(process.env.WATCHDOG_INTERVAL_MS || '15000', 10));
-const WATCHDOG_MAX_AGE_MS = Math.max(HARD_EXTRACT_MS, HARD_SEARCH_MS) + 30000;
+const WATCHDOG_MAX_AGE_MS = JOB_PROCESS_TIMEOUT_MS + 30000;
 const BROWSER_POOL_COUNT = Math.max(1, Math.min(4, parseInt(process.env.BROWSER_POOL_COUNT || '1', 10)));
 const BROWSER_CONTEXTS_PER_POOL = Math.max(1, Math.min(4, parseInt(process.env.BROWSER_CONTEXTS_PER_POOL || '2', 10)));
 let startupReady = false;
@@ -2757,11 +2757,13 @@ extractionQueue.process(2, async (job) => {
     return await withTimeout(processExtractionJob(job), JOB_PROCESS_TIMEOUT_MS, 'JOB_PROCESS_TIMEOUT');
   } catch (error) {
     logger.error({ jobId: job.id, error: error.message }, 'Job hard timeout');
+    const errorCode = error.code || 'JOB_PROCESS_TIMEOUT';
     return {
       success: false,
       error: 'Job exceeded the maximum processing time',
-      errorCode: error.code || 'JOB_PROCESS_TIMEOUT',
-      duration: JOB_PROCESS_TIMEOUT_MS / 1000
+      errorCode,
+      duration: JOB_PROCESS_TIMEOUT_MS / 1000,
+      diagnostics: classifyExtractionFailure({ success: false, errorCode, diagnostics: { timedOut: true, mediaRequests: 0, mediaCandidates: 0 } }, error)
     };
   }
 });
