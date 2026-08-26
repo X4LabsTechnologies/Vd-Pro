@@ -151,5 +151,113 @@
     { "name": "Michaels Classes", "url": "https://michaels.com/classes", "enabled": true, "priority": 70 },
     { "name": "Instructables", "url": "https://instructables.com", "enabled": true, "priority": 80 },
     { "name": "5-Minute Crafts", "url": "https://5-minute-crafts.com", "enabled": true, "priority": 100 }
+  ],
+  "gaming_video": [
+    { "name": "Steam Gameplay Videos", "url": "https://steamcommunity.com", "enabled": true, "priority": 10 },
+    { "name": "Epic Games Videos", "url": "https://epicgames.com", "enabled": true, "priority": 20 },
+    { "name": "GOG Videos", "url": "https://gog.com", "enabled": true, "priority": 30 },
+    { "name": "GameSpot", "url": "https://gamespot.com", "enabled": true, "priority": 40 },
+    { "name": "IGN", "url": "https://ign.com", "enabled": true, "priority": 50 },
+    { "name": "Polygon", "url": "https://polygon.com", "enabled": true, "priority": 60 },
+    { "name": "Kotaku", "url": "https://kotaku.com", "enabled": true, "priority": 70 },
+    { "name": "Rock Paper Shotgun", "url": "https://rockpapershotgun.com", "enabled": true, "priority": 80 },
+    { "name": "The Escapist", "url": "https://escapistmagazine.com", "enabled": true, "priority": 90 },
+    { "name": "Nintendo Life", "url": "https://nintendolife.com", "enabled": true, "priority": 100 }
+  ],
+  "art_creative": [
+    { "name": "My Modern Met", "url": "https://mymodernmet.com", "enabled": true, "priority": 10 },
+    { "name": "Colossal", "url": "https://thisiscolossal.com", "enabled": true, "priority": 20 },
+    { "name": "Designboom", "url": "https://designboom.com", "enabled": true, "priority": 30 },
+    { "name": "Artsy", "url": "https://artsy.net", "enabled": true, "priority": 40 },
+    { "name": "Saatchi Art", "url": "https://saatchiart.com", "enabled": true, "priority": 50 },
+    { "name": "Widewalls", "url": "https://widewalls.ch", "enabled": true, "priority": 60 },
+    { "name": "Artribune", "url": "https://artribune.com", "enabled": true, "priority": 70 },
+    { "name": "Hyperallergic", "url": "https://hyperallergic.com", "enabled": true, "priority": 80 },
+    { "name": "Artnet News", "url": "https://news.artnet.com", "enabled": true, "priority": 90 },
+    { "name": "Frieze", "url": "https://frieze.com", "enabled": true, "priority": 100 }
+  ],
+  "travel_nature": [
+    { "name": "Airbnb Experiences", "url": "https://airbnb.com/experiences", "enabled": true, "priority": 10 },
+    { "name": "Lonely Planet Videos", "url": "https://lonelyplanet.com/videos", "enabled": true, "priority": 20 },
+    { "name": "Travel + Leisure Videos", "url": "https://travelandleisure.com/videos", "enabled": true, "priority": 30 },
+    { "name": "AFAR", "url": "https://afar.com", "enabled": true, "priority": 40 },
+    { "name": "Matador Network", "url": "https://matadornetwork.com", "enabled": true, "priority": 50 },
+    { "name": "Outdoor Project", "url": "https://outdoorproject.com", "enabled": true, "priority": 60 },
+    { "name": "The Outbound", "url": "https://theoutbound.com", "enabled": true, "priority": 70 },
+    { "name": "Explorers Web", "url": "https://explorersweb.com", "enabled": true, "priority": 80 },
+    { "name": "Mountain Review", "url": "https://mountainreview.com", "enabled": true, "priority": 90 },
+    { "name": "AllTrails", "url": "https://alltrails.com", "enabled": true, "priority": 100 }
+  ],
+  "tech_science": [
+    { "name": "Ars Technica", "url": "https://arstechnica.com", "enabled": true, "priority": 10 },
+    { "name": "Wired", "url": "https://wired.com", "enabled": true, "priority": 20 },
+    { "name": "TechCrunch", "url": "https://techcrunch.com", "enabled": true, "priority": 30 },
+    { "name": "The Verge", "url": "https://theverge.com", "enabled": true, "priority": 40 },
+    { "name": "Gizmodo", "url": "https://gizmodo.com", "enabled": true, "priority": 50 },
+    { "name": "Engadget", "url": "https://engadget.com", "enabled": true, "priority": 60 },
+    { "name": "The Next Web", "url": "https://thenextweb.com", "enabled": true, "priority": 70 },
+    { "name": "ZDNet", "url": "https://zdnet.com", "enabled": true, "priority": 80 },
+    { "name": "CNET", "url": "https://cnet.com", "enabled": true, "priority": 90 },
+    { "name": "Digital Trends", "url": "https://digitaltrends.com", "enabled": true, "priority": 100 }
+  ],
+  "cooking_food": [
+    { "name": "Serious Eats", "url": "https://seriouseats.com", "enabled": true, "priority": 10 },
+    { "name": "Epicurious", "url": "https://epicurious.com", "enabled": true, "priority": 20 },
+    { "name": "Delish", "url": "https://delish.com", "enabled": true, "priority": 30 },
+    { "name": "Bon Appétit", "url": "https://bonappetit.com", "enabled": true, "priority": 40 },
+    { "name": "The Kitchn", "url": "https://thekitchn.com", "enabled": true, "priority": 50 },
+    { "name": "Simply Recipes", "url": "https://simplyrecipes.com", "enabled": true, "priority": 60 },
+    { "name": "Spruce Eats", "url": "https://thespruceeats.com", "enabled": true, "priority": 70 },
+    { "name": "Taste of Home", "url": "https://tasteofhome.com", "enabled": true, "priority": 80 },
+    { "name": "Food52", "url": "https://food52.com", "enabled": true, "priority": 90 },
+    { "name": "Saveur", "url": "https://saveur.com", "enabled": true, "priority": 100 }
+  ],
+  "fitness_health": [
+    { "name": "Bodybuilding.com", "url": "https://bodybuilding.com", "enabled": true, "priority": 10 },
+    { "name": "Muscle & Fitness", "url": "https://muscleandfitness.com", "enabled": true, "priority": 20 },
+    { "name": "Men's Health", "url": "https://menshealth.com", "enabled": true, "priority": 30 },
+    { "name": "Women's Health", "url": "https://womenshealth.com", "enabled": true, "priority": 40 },
+    { "name": "Shape", "url": "https://shape.com", "enabled": true, "priority": 50 },
+    { "name": "Healthline", "url": "https://healthline.com", "enabled": true, "priority": 60 },
+    { "name": "WebMD", "url": "https://webmd.com", "enabled": true, "priority": 70 },
+    { "name": "Mayo Clinic", "url": "https://mayoclinic.org", "enabled": true, "priority": 80 },
+    { "name": "Verywell Fit", "url": "https://verywellfit.com", "enabled": true, "priority": 90 },
+    { "name": "Self", "url": "https://self.com", "enabled": true, "priority": 100 }
+  ],
+  "theater_live": [
+    { "name": "Broadway.com", "url": "https://broadway.com", "enabled": true, "priority": 10 },
+    { "name": "TheatreMania", "url": "https://theatermania.com", "enabled": true, "priority": 20 },
+    { "name": "Playbill", "url": "https://playbill.com", "enabled": true, "priority": 30 },
+    { "name": "London Theatre Direct", "url": "https://londontheatredirect.com", "enabled": true, "priority": 40 },
+    { "name": "The Broadway League", "url": "https://broadwayleague.com", "enabled": true, "priority": 50 },
+    { "name": "National Theatre", "url": "https://youtube.com/@NationalTheatre", "enabled": true, "priority": 60 },
+    { "name": "Royal Shakespeare Company", "url": "https://rsc.org.uk", "enabled": true, "priority": 70 },
+    { "name": "Globe Theatre", "url": "https://shakespearesglobe.com", "enabled": true, "priority": 80 },
+    { "name": "The Public Theater", "url": "https://publictheater.org", "enabled": true, "priority": 90 },
+    { "name": "The Actors Fund", "url": "https://actorsfund.org", "enabled": true, "priority": 100 }
+  ],
+  "short_films": [
+    { "name": "FilmShortage", "url": "https://filmshortage.com", "enabled": true, "priority": 10 },
+    { "name": "Short of the Week", "url": "https://shortoftheweek.com", "enabled": true, "priority": 20 },
+    { "name": "Watch Now", "url": "https://watchnow.com", "enabled": true, "priority": 30 },
+    { "name": "Director's Notes", "url": "https://directorsnotes.com", "enabled": true, "priority": 40 },
+    { "name": "Film Independent", "url": "https://filmindependent.org", "enabled": true, "priority": 50 },
+    { "name": "Spike Lee's Shorts", "url": "https://spikelee.com", "enabled": true, "priority": 60 },
+    { "name": "Sundance Shorts", "url": "https://sundance.org", "enabled": true, "priority": 70 },
+    { "name": "Vimeo Staff Picks", "url": "https://vimeo.com/channels/staffpicks", "enabled": true, "priority": 80 },
+    { "name": "The Atlantic Videos", "url": "https://theatlantic.com/video", "enabled": true, "priority": 90 },
+    { "name": "The New Yorker Videos", "url": "https://newyorker.com/video", "enabled": true, "priority": 100 }
+  ],
+  "lifestyle": [
+    { "name": "Blogger Videos", "url": "https://blogger.com", "enabled": true, "priority": 10 },
+    { "name": "WordPress Videos", "url": "https://wordpress.com", "enabled": true, "priority": 20 },
+    { "name": "Flickr", "url": "https://flickr.com", "enabled": true, "priority": 30 },
+    { "name": "500px", "url": "https://500px.com", "enabled": true, "priority": 40 },
+    { "name": "VSCO", "url": "https://vsco.co", "enabled": true, "priority": 50 },
+    { "name": "Tumblr", "url": "https://tumblr.com", "enabled": true, "priority": 60 },
+    { "name": "Pinterest", "url": "https://pinterest.com", "enabled": true, "priority": 70 },
+    { "name": "Medium", "url": "https://medium.com", "enabled": true, "priority": 80 },
+    { "name": "Substack Videos", "url": "https://substack.com", "enabled": true, "priority": 90 },
+    { "name": "Ghost", "url": "https://ghost.org", "enabled": true, "priority": 100 }
   ]
 }

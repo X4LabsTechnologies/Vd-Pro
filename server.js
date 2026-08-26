@@ -2186,7 +2186,15 @@ class SearchProvider {
       documentary_education: 'documentary_education', archives: 'historical_archives', historical: 'historical_archives',
       historical_archives: 'historical_archives', news: 'news_video', news_video: 'news_video',
       religious: 'religious_spiritual', spiritual: 'religious_spiritual', religious_spiritual: 'religious_spiritual',
-      diy: 'diy_howto', howto: 'diy_howto', diy_howto: 'diy_howto'
+      diy: 'diy_howto', howto: 'diy_howto', diy_howto: 'diy_howto',
+      gaming: 'gaming_video', gaming_video: 'gaming_video', games: 'gaming_video',
+      art: 'art_creative', creative: 'art_creative', art_creative: 'art_creative',
+      travel: 'travel_nature', nature: 'travel_nature', travel_nature: 'travel_nature',
+      tech: 'tech_science', science: 'tech_science', tech_science: 'tech_science',
+      cooking: 'cooking_food', food: 'cooking_food', cooking_food: 'cooking_food',
+      fitness: 'fitness_health', health: 'fitness_health', fitness_health: 'fitness_health',
+      theater: 'theater_live', theatre: 'theater_live', theater_live: 'theater_live',
+      shorts: 'short_films', short_films: 'short_films', lifestyle: 'lifestyle'
     };
     const sources = SOURCE_CATALOG[key] || SOURCE_CATALOG[aliases[key]] || [];
     return sources.filter((source) => source && source.enabled && source.url).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
