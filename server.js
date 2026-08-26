@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.7.0 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.8.0 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -2170,21 +2170,43 @@ class SearchProvider {
     const siteInfo = this.normalizeSiteHint(site);
     const map = new Map();
     const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
-    const watchQuery = '"' + scoped + q + '" watch stream episode movie series';
-    const arabicWatchQuery = scoped + q + ' مشاهدة فيلم مسلسل حلقة';
-    await Promise.all([
-      this.searchDuckDuckGoAPI(q, map),
-      this.searchDuckDuckGoAPI(watchQuery, map),
+    const watchQuery = scoped + '"' + q + '" watch stream episode movie series';
+    const arabicWatchQuery = scoped + '"' + q + '" مشاهدة فيلم مسلسل حلقة';
+    const runTier = async (tasks) => {
+      await Promise.all(tasks);
+      return [...map.values()];
+    };
+    const hasStrongWatch = () => [...map.values()].some((item) =>
+      this.isWatchCandidate(item) && this.matchesRequestedTitle(q, item) && Number(item.score || 0) >= 0.12 && this.siteMatches(item, siteInfo)
+    );
+
+    // Tier 1: low-cost broad discovery. Stop escalating when a matching watch page exists.
+    await runTier([
       this.searchDuckDuckGoHtml(q, map),
-      this.searchDuckDuckGoHtml(watchQuery, map),
-      this.searchDuckDuckGoHtml(arabicWatchQuery, map),
       this.searchBing(q, map),
-      this.searchBing(watchQuery, map),
-      this.searchBing(arabicWatchQuery, map),
-      this.searchWikipedia(q, map),
-      this.searchTMDB(q, map),
-      this.searchOMDb(q, map)
+      this.searchDuckDuckGoAPI(q, map)
     ]);
+
+    // Tier 2: watch-page intent and optional domain restriction.
+    if (!hasStrongWatch()) {
+      await runTier([
+        this.searchDuckDuckGoHtml(watchQuery, map),
+        this.searchBing(watchQuery, map),
+        this.searchDuckDuckGoHtml(arabicWatchQuery, map),
+        this.searchBing(arabicWatchQuery, map),
+        this.searchDuckDuckGoAPI(watchQuery, map)
+      ]);
+    }
+
+    // Tier 3: metadata providers are used only to improve identity matching, never as watch pages.
+    if (!hasStrongWatch()) {
+      await runTier([
+        this.searchWikipedia(q, map),
+        this.searchTMDB(q, map),
+        this.searchOMDb(q, map)
+      ]);
+    }
+
     let results = [...map.values()].sort((a, b) => b.score - a.score);
     if (siteInfo.raw) results = results.filter((r) => this.siteMatches(r, siteInfo));
     const strong = results.filter((r) => r.score >= 0.12);
@@ -2358,7 +2380,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.7.0',
+    version: '4.8.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2508,7 +2530,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.7.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.8.0' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -2867,13 +2889,13 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.7.0 listening on :' + PORT);
-  console.log('VD-PRO v4.7.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.8.0 listening on :' + PORT);
+  console.log('VD-PRO v4.8.0 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.7.0 starting...');
+    logger.info('Vd-Pro v4.8.0 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
