@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.8.0 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.9.0 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -31,11 +31,24 @@ import * as prometheus from 'prom-client';
 import { URL as URLParser } from 'url';
 import dns from 'dns/promises';
 import bcrypt from 'bcrypt';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import swaggerUi from 'swagger-ui-express';
 import { runFallbackExtraction } from './src/fallback-extractor.js';
 import { applyMediaFlowProxy, isMediaFlowProxyConfigured } from './src/mediaflow-proxy.js';
 
 config();
+
+const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SOURCE_CATALOG_PATH = path.join(APP_DIR, 'config', 'sources.json');
+const CATALOG_CONCURRENCY = Math.max(1, Math.min(4, parseInt(process.env.CATALOG_CONCURRENCY || '3', 10)));
+let SOURCE_CATALOG = {};
+try {
+  SOURCE_CATALOG = JSON.parse(fs.readFileSync(SOURCE_CATALOG_PATH, 'utf8'));
+} catch (error) {
+  console.warn('Source catalog unavailable:', error.message);
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -2164,6 +2177,39 @@ class SearchProvider {
     return siteInfo.tokens.length ? siteInfo.tokens.some((token) => descriptor.includes(token)) : true;
   }
 
+  getCatalogSources(category = '') {
+    const key = String(category || '').trim().toLowerCase();
+    const aliases = { movies: 'movies_series', series: 'movies_series', film: 'movies_series', anime: 'anime', music: 'music', general: 'general_video', video: 'general_video' };
+    const sources = SOURCE_CATALOG[key] || SOURCE_CATALOG[aliases[key]] || [];
+    return sources.filter((source) => source && source.enabled && source.url).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
+  }
+
+  async searchCatalogByName(query, category = '') {
+    const sources = this.getCatalogSources(category);
+    const collected = [];
+    for (let offset = 0; offset < sources.length; offset += CATALOG_CONCURRENCY) {
+      const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
+      const results = await Promise.all(batch.map(async (source) => {
+        try {
+          const items = await this.searchByName(query, source.url);
+          return items.map((item) => ({ ...item, sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category }));
+        } catch (error) {
+          logger.warn({ source: source.name, error: error.message }, 'Catalog source search failed');
+          return [];
+        }
+      }));
+      collected.push(...results.flat());
+      if (collected.some((item) => this.isWatchCandidate(item) && this.matchesRequestedTitle(query, item))) break;
+    }
+    const unique = new Map();
+    for (const item of collected) {
+      const key = item.url;
+      if (!key || unique.has(key)) continue;
+      unique.set(key, item);
+    }
+    return [...unique.values()].sort((a, b) => Number(b.matchScore || 0) - Number(a.matchScore || 0));
+  }
+
   async searchByName(query, site = '') {
     const q = String(query || '').trim();
     if (!q) return [];
@@ -2225,7 +2271,8 @@ class SearchProvider {
       imdbId: r.imdbId,
       tmdbId: r.tmdbId,
       poster: r.poster,
-      candidateClass: r.candidateClass || 'unknown'
+      candidateClass: r.candidateClass || 'unknown',
+      ...(r.sourceType ? { sourceType: r.sourceType, sourceName: r.sourceName, sourceUrl: r.sourceUrl, catalogCategory: r.catalogCategory } : {})
     }));
   }
 }
@@ -2380,7 +2427,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.8.0',
+    version: '4.9.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2460,7 +2507,7 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
 
 app.get('/api/v1/search', verifyToken, async (req, res) => {
   try {
-    const { q, site = '', extract, quality = 'auto', deep } = req.query;
+      const { q, site = '', category = '', extract, quality = 'auto', deep } = req.query;
     if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     const doExtract = extract === '1' || extract === 'true';
@@ -2470,6 +2517,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
           type: doExtract ? 'search_extract' : 'search',
           search: String(q).trim(),
           site: String(site || '').trim(),
+          category: String(category || '').trim(),
           userId,
           quality,
           deep: deep === '1' || deep === 'true'
@@ -2484,6 +2532,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
       jobId: job.id,
       query: String(q).trim(),
       ...(site ? { site: String(site).trim() } : {}),
+      ...(category ? { category: String(category).trim() } : {}),
       mode: doExtract ? 'search_and_extract' : 'search_only',
       statusUrl: '/api/v1/jobs/' + job.id
     });
@@ -2530,7 +2579,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.8.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.9.0' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -2644,15 +2693,16 @@ async function processExtractionJob(job) {
     const page = ctx.page;
 
     if (job.data.type === 'search_extract') {
-      const results = await withTimeout(
-        new SearchProvider().searchByName(job.data.search, job.data.site),
-        HARD_SEARCH_MS,
-        'SEARCH_TIMEOUT'
-      );
+      const searchProvider = new SearchProvider();
+      const catalogResults = job.data.category
+        ? await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category), HARD_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT')
+        : [];
+      const results = catalogResults.length
+        ? catalogResults
+        : await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT');
       if (!results.length) {
         return { success: false, query: job.data.search, results: [], errorCode: 'NO_SEARCH_RESULTS' };
       }
-      const searchProvider = new SearchProvider();
       const infoCandidates = results.filter(
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
@@ -2889,13 +2939,13 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.8.0 listening on :' + PORT);
-  console.log('VD-PRO v4.8.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.9.0 listening on :' + PORT);
+  console.log('VD-PRO v4.9.0 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.8.0 starting...');
+    logger.info('Vd-Pro v4.9.0 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
