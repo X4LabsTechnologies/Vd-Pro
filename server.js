@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.9.0 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.10.0 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -74,6 +74,7 @@ function sleep(ms) {
 }
 const HARD_EXTRACT_MS = envMs('HARD_EXTRACT_MS', 110000, 10000, 15 * 60 * 1000);
 const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
+const CATALOG_SEARCH_MS = envMs('CATALOG_SEARCH_MS', 18000, 5000, 2 * 60 * 1000);
 const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
 const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
@@ -2198,7 +2199,10 @@ class SearchProvider {
       sports: 'sports_video', sport: 'sports_video', sports_video: 'sports_video',
       kids: 'kids_family', family: 'kids_family', kids_family: 'kids_family',
       podcasts: 'podcasts_video', podcast: 'podcasts_video', podcasts_video: 'podcasts_video',
-      live: 'live_streaming', livestream: 'live_streaming', live_streaming: 'live_streaming'
+      live: 'live_streaming', livestream: 'live_streaming', live_streaming: 'live_streaming',
+      space: 'space_science', astronomy: 'space_science', science_space: 'space_science', space_science: 'space_science',
+      history: 'history_culture', culture: 'history_culture', history_culture: 'history_culture',
+      languages: 'language_learning', language: 'language_learning', language_learning: 'language_learning'
     };
     const sources = SOURCE_CATALOG[key] || SOURCE_CATALOG[aliases[key]] || [];
     return sources.filter((source) => source && source.enabled && source.url).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
@@ -2211,7 +2215,7 @@ class SearchProvider {
       const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
       const results = await Promise.all(batch.map(async (source) => {
         try {
-          const items = await this.searchByName(query, source.url);
+          const items = await this.searchByName(query, source.url, { catalogFast: true });
           return items.map((item) => ({ ...item, sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category }));
         } catch (error) {
           logger.warn({ source: source.name, error: error.message }, 'Catalog source search failed');
@@ -2230,7 +2234,7 @@ class SearchProvider {
     return [...unique.values()].sort((a, b) => Number(b.matchScore || 0) - Number(a.matchScore || 0));
   }
 
-  async searchByName(query, site = '') {
+  async searchByName(query, site = '', options = {}) {
     const q = String(query || '').trim();
     if (!q) return [];
     const siteInfo = this.normalizeSiteHint(site);
@@ -2245,6 +2249,31 @@ class SearchProvider {
     const hasStrongWatch = () => [...map.values()].some((item) =>
       this.isWatchCandidate(item) && this.matchesRequestedTitle(q, item) && Number(item.score || 0) >= 0.12 && this.siteMatches(item, siteInfo)
     );
+
+    if (options.catalogFast) {
+      await runTier([
+        this.searchDuckDuckGoHtml(watchQuery, map),
+        this.searchBing(watchQuery, map)
+      ]);
+      let fastResults = [...map.values()].filter((r) => this.siteMatches(r, siteInfo));
+      fastResults.sort((a, b) => b.score - a.score);
+      return fastResults.slice(0, 10).map((r, i) => ({
+        rank: i + 1,
+        name: r.name,
+        title: r.title,
+        url: r.url,
+        pageUrl: r.pageUrl || r.url,
+        matchScore: Math.round(r.score * 1000) / 1000,
+        source: r.source,
+        type: r.type,
+        year: r.year,
+        overview: r.overview,
+        imdbId: r.imdbId,
+        tmdbId: r.tmdbId,
+        poster: r.poster,
+        candidateClass: r.candidateClass || 'unknown'
+      }));
+    }
 
     // Tier 1: low-cost broad discovery. Stop escalating when a matching watch page exists.
     await runTier([
@@ -2447,7 +2476,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.9.0',
+    version: '4.10.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2599,7 +2628,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.9.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.0' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -2714,12 +2743,21 @@ async function processExtractionJob(job) {
 
     if (job.data.type === 'search_extract') {
       const searchProvider = new SearchProvider();
-      const catalogResults = job.data.category
-        ? await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category), HARD_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT')
+      let catalogResults = [];
+      if (job.data.category) {
+        try {
+          catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
+        } catch (catalogError) {
+          logger.warn({ category: job.data.category, error: catalogError.message }, 'Catalog search budget exhausted; falling back to internet search');
+        }
+      }
+      const catalogHasStrongWatch = catalogResults.some((r) =>
+        searchProvider.isWatchCandidate(r) && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12
+      );
+      const internetResults = !catalogHasStrongWatch
+        ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
         : [];
-      const results = catalogResults.length
-        ? catalogResults
-        : await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT');
+      const results = [...catalogResults, ...internetResults];
       if (!results.length) {
         return { success: false, query: job.data.search, results: [], errorCode: 'NO_SEARCH_RESULTS' };
       }
@@ -2959,13 +2997,13 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.9.0 listening on :' + PORT);
-  console.log('VD-PRO v4.9.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.10.0 listening on :' + PORT);
+  console.log('VD-PRO v4.10.0 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.9.0 starting...');
+    logger.info('Vd-Pro v4.10.0 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);

@@ -303,5 +303,41 @@
     { "name": "Kick", "url": "https://kick.com", "enabled": true, "priority": 60 },
     { "name": "Rumble", "url": "https://rumble.com", "enabled": true, "priority": 70 },
     { "name": "Mixcloud Live", "url": "https://mixcloud.com", "enabled": true, "priority": 80 }
+  ],
+  "space_science": [
+    { "name": "NASA", "url": "https://nasa.gov", "enabled": true, "priority": 10 },
+    { "name": "NASA JPL Videos", "url": "https://jpl.nasa.gov/videos", "enabled": true, "priority": 20 },
+    { "name": "ESA", "url": "https://esa.int", "enabled": true, "priority": 30 },
+    { "name": "NASA TV", "url": "https://nasa.gov/multimedia/nasatv", "enabled": true, "priority": 40 },
+    { "name": "ViewSpace", "url": "https://viewspace.org", "enabled": true, "priority": 50 },
+    { "name": "Caltech Spitzer", "url": "https://spitzer.caltech.edu/videos", "enabled": true, "priority": 60 },
+    { "name": "CERN", "url": "https://home.cern", "enabled": true, "priority": 70 },
+    { "name": "Science Channel", "url": "https://sciencechannel.com", "enabled": true, "priority": 80 },
+    { "name": "SciShow", "url": "https://youtube.com/@SciShow", "enabled": true, "priority": 90 },
+    { "name": "Veritasium", "url": "https://youtube.com/@veritasium", "enabled": true, "priority": 100 }
+  ],
+  "history_culture": [
+    { "name": "Smithsonian", "url": "https://smithsonianmag.com", "enabled": true, "priority": 10 },
+    { "name": "Library of Congress", "url": "https://loc.gov", "enabled": true, "priority": 20 },
+    { "name": "National Archives", "url": "https://archives.gov", "enabled": true, "priority": 30 },
+    { "name": "British Museum", "url": "https://britishmuseum.org", "enabled": true, "priority": 40 },
+    { "name": "The Met", "url": "https://metmuseum.org", "enabled": true, "priority": 50 },
+    { "name": "Google Arts & Culture", "url": "https://artsandculture.google.com", "enabled": true, "priority": 60 },
+    { "name": "Khan Academy Art History", "url": "https://khanacademy.org/humanities/arthistory", "enabled": true, "priority": 70 },
+    { "name": "History Channel", "url": "https://history.com", "enabled": true, "priority": 80 },
+    { "name": "Ancient History Encyclopedia", "url": "https://worldhistory.org", "enabled": true, "priority": 90 },
+    { "name": "Digital Public Library of America", "url": "https://dp.la", "enabled": true, "priority": 100 }
+  ],
+  "language_learning": [
+    { "name": "Duolingo", "url": "https://duolingo.com", "enabled": true, "priority": 10 },
+    { "name": "BBC Languages", "url": "https://bbc.co.uk/languages", "enabled": true, "priority": 20 },
+    { "name": "Easy Languages", "url": "https://youtube.com/@Easylanguages", "enabled": true, "priority": 30 },
+    { "name": "Language Transfer", "url": "https://languagetransfer.org", "enabled": true, "priority": 40 },
+    { "name": "OpenLearn Languages", "url": "https://open.edu/openlearn", "enabled": true, "priority": 50 },
+    { "name": "Coursera Languages", "url": "https://coursera.org", "enabled": true, "priority": 60 },
+    { "name": "edX Languages", "url": "https://edx.org", "enabled": true, "priority": 70 },
+    { "name": "Memrise", "url": "https://memrise.com", "enabled": true, "priority": 80 },
+    { "name": "Babbel", "url": "https://babbel.com", "enabled": true, "priority": 90 },
+    { "name": "LanguagePlayer", "url": "https://languageplayer.io", "enabled": true, "priority": 100 }
   ]
 }
