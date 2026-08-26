@@ -259,5 +259,49 @@
     { "name": "Medium", "url": "https://medium.com", "enabled": true, "priority": 80 },
     { "name": "Substack Videos", "url": "https://substack.com", "enabled": true, "priority": 90 },
     { "name": "Ghost", "url": "https://ghost.org", "enabled": true, "priority": 100 }
+  ],
+  "sports_video": [
+    { "name": "Hudl", "url": "https://hudl.com", "enabled": true, "priority": 10 },
+    { "name": "ESPN Watch", "url": "https://espn.com/watch", "enabled": true, "priority": 20 },
+    { "name": "FOX Sports", "url": "https://foxsports.com", "enabled": true, "priority": 30 },
+    { "name": "NBC Sports", "url": "https://nbcsports.com/watch", "enabled": true, "priority": 40 },
+    { "name": "FIFA+", "url": "https://plus.fifa.com", "enabled": true, "priority": 50 },
+    { "name": "Olympics", "url": "https://olympics.com", "enabled": true, "priority": 60 },
+    { "name": "NBA", "url": "https://nba.com", "enabled": true, "priority": 70 },
+    { "name": "NFL", "url": "https://nfl.com", "enabled": true, "priority": 80 },
+    { "name": "MLB", "url": "https://mlb.com", "enabled": true, "priority": 90 },
+    { "name": "NCAA", "url": "https://ncaa.com", "enabled": true, "priority": 100 }
+  ],
+  "kids_family": [
+    { "name": "Sensical", "url": "https://sensical.tv", "enabled": true, "priority": 10 },
+    { "name": "Kidoodle.TV", "url": "https://kidoodle.tv", "enabled": true, "priority": 20 },
+    { "name": "PBS KIDS", "url": "https://pbskids.org", "enabled": true, "priority": 30 },
+    { "name": "National Geographic Kids", "url": "https://kids.nationalgeographic.com/videos", "enabled": true, "priority": 40 },
+    { "name": "Khan Academy Kids", "url": "https://khanacademy.org/kids", "enabled": true, "priority": 50 },
+    { "name": "Sesame Street", "url": "https://sesamestreet.org", "enabled": true, "priority": 60 },
+    { "name": "Nickelodeon", "url": "https://nick.com", "enabled": true, "priority": 70 },
+    { "name": "Cartoon Network", "url": "https://cartoonnetwork.com", "enabled": true, "priority": 80 },
+    { "name": "CBeebies", "url": "https://bbc.co.uk/cbeebies", "enabled": true, "priority": 90 },
+    { "name": "Treehouse", "url": "https://treehousetv.com", "enabled": true, "priority": 100 }
+  ],
+  "podcasts_video": [
+    { "name": "Apple Podcasts", "url": "https://podcasts.apple.com", "enabled": true, "priority": 10 },
+    { "name": "Spotify Podcasts", "url": "https://open.spotify.com", "enabled": true, "priority": 20 },
+    { "name": "Podbean", "url": "https://podbean.com", "enabled": true, "priority": 30 },
+    { "name": "YouTube Podcasts", "url": "https://youtube.com/podcasts", "enabled": true, "priority": 40 },
+    { "name": "SoundCloud Podcasts", "url": "https://soundcloud.com", "enabled": true, "priority": 50 },
+    { "name": "Vimeo Video Podcasts", "url": "https://vimeo.com", "enabled": true, "priority": 60 },
+    { "name": "Libsyn", "url": "https://libsyn.com", "enabled": true, "priority": 70 },
+    { "name": "Zencastr", "url": "https://zencastr.com", "enabled": true, "priority": 80 }
+  ],
+  "live_streaming": [
+    { "name": "YouTube Live", "url": "https://youtube.com/live", "enabled": true, "priority": 10 },
+    { "name": "Twitch", "url": "https://twitch.tv", "enabled": true, "priority": 20 },
+    { "name": "Dailymotion Live", "url": "https://dailymotion.com", "enabled": true, "priority": 30 },
+    { "name": "Vimeo Live", "url": "https://vimeo.com", "enabled": true, "priority": 40 },
+    { "name": "Facebook Live", "url": "https://facebook.com/live", "enabled": true, "priority": 50 },
+    { "name": "Kick", "url": "https://kick.com", "enabled": true, "priority": 60 },
+    { "name": "Rumble", "url": "https://rumble.com", "enabled": true, "priority": 70 },
+    { "name": "Mixcloud Live", "url": "https://mixcloud.com", "enabled": true, "priority": 80 }
   ]
 }

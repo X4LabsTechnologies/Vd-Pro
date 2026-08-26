@@ -2194,7 +2194,11 @@ class SearchProvider {
       cooking: 'cooking_food', food: 'cooking_food', cooking_food: 'cooking_food',
       fitness: 'fitness_health', health: 'fitness_health', fitness_health: 'fitness_health',
       theater: 'theater_live', theatre: 'theater_live', theater_live: 'theater_live',
-      shorts: 'short_films', short_films: 'short_films', lifestyle: 'lifestyle'
+      shorts: 'short_films', short_films: 'short_films', lifestyle: 'lifestyle',
+      sports: 'sports_video', sport: 'sports_video', sports_video: 'sports_video',
+      kids: 'kids_family', family: 'kids_family', kids_family: 'kids_family',
+      podcasts: 'podcasts_video', podcast: 'podcasts_video', podcasts_video: 'podcasts_video',
+      live: 'live_streaming', livestream: 'live_streaming', live_streaming: 'live_streaming'
     };
     const sources = SOURCE_CATALOG[key] || SOURCE_CATALOG[aliases[key]] || [];
     return sources.filter((source) => source && source.enabled && source.url).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
