@@ -70,6 +70,86 @@
     { "name": "BeeMP3s", "url": "https://beemp3s.net", "enabled": true, "priority": 210 },
     { "name": "SoundCloud", "url": "https://soundcloud.com", "enabled": true, "priority": 220 }
   ],
-  "general_video": [],
-  "documentary": []
+  "general_video": [
+    { "name": "YouTube", "url": "https://youtube.com", "enabled": true, "priority": 10 },
+    { "name": "TikTok", "url": "https://tiktok.com", "enabled": true, "priority": 20 },
+    { "name": "Dailymotion", "url": "https://dailymotion.com", "enabled": true, "priority": 30 },
+    { "name": "Vimeo", "url": "https://vimeo.com", "enabled": true, "priority": 40 },
+    { "name": "Instagram Reels", "url": "https://instagram.com/reels", "enabled": true, "priority": 50 },
+    { "name": "Snapchat", "url": "https://snapchat.com", "enabled": true, "priority": 60 },
+    { "name": "Twitch", "url": "https://twitch.tv", "enabled": true, "priority": 70 }
+  ],
+  "stock_video": [
+    { "name": "Pexels", "url": "https://pexels.com", "enabled": true, "priority": 10 },
+    { "name": "Pixabay", "url": "https://pixabay.com", "enabled": true, "priority": 20 },
+    { "name": "Videvo", "url": "https://videvo.net", "enabled": true, "priority": 30 },
+    { "name": "Mixkit", "url": "https://mixkit.co", "enabled": true, "priority": 40 },
+    { "name": "Coverr", "url": "https://coverr.co", "enabled": true, "priority": 50 },
+    { "name": "Life of Vids", "url": "https://lifeofvids.com", "enabled": true, "priority": 60 },
+    { "name": "Videezy", "url": "https://videezy.com", "enabled": true, "priority": 70 }
+  ],
+  "documentary_education": [
+    { "name": "Documentary Heaven", "url": "https://documentaryheaven.com", "enabled": true, "priority": 10 },
+    { "name": "Top Documentary Films", "url": "https://topdocumentaryfilms.com", "enabled": true, "priority": 20 },
+    { "name": "TED Talks", "url": "https://ted.com", "enabled": true, "priority": 30 },
+    { "name": "Khan Academy", "url": "https://khanacademy.org", "enabled": true, "priority": 40 },
+    { "name": "YouTube EDU", "url": "https://youtube.com/edu", "enabled": true, "priority": 50 },
+    { "name": "Internet Archive", "url": "https://archive.org", "enabled": true, "priority": 60 },
+    { "name": "National Geographic", "url": "https://nationalgeographic.com", "enabled": true, "priority": 70 },
+    { "name": "BBC Documentary", "url": "https://bbc.com/documentaries", "enabled": true, "priority": 80 },
+    { "name": "PBS Documentaries", "url": "https://pbs.org/documentaries", "enabled": true, "priority": 90 },
+    { "name": "Documentary Mania", "url": "https://documentarymania.com", "enabled": true, "priority": 100 },
+    { "name": "SnagFilms", "url": "https://snagfilms.com", "enabled": true, "priority": 110 },
+    { "name": "Dailymotion Documentary", "url": "https://dailymotion.com/documentary", "enabled": true, "priority": 120 },
+    { "name": "Vimeo Education", "url": "https://vimeo.com/channels/education", "enabled": true, "priority": 130 },
+    { "name": "Open Culture", "url": "https://openculture.com", "enabled": true, "priority": 140 },
+    { "name": "FreeDocumentaries", "url": "https://freedocumentaries.org", "enabled": true, "priority": 150 }
+  ],
+  "historical_archives": [
+    { "name": "Internet Archive", "url": "https://archive.org", "enabled": true, "priority": 10 },
+    { "name": "Prelinger Archives", "url": "https://archive.org/details/prelinger", "enabled": true, "priority": 20 },
+    { "name": "Public Domain Review", "url": "https://publicdomainreview.org", "enabled": true, "priority": 30 },
+    { "name": "Library of Congress", "url": "https://loc.gov", "enabled": true, "priority": 40 },
+    { "name": "National Archives", "url": "https://archives.gov", "enabled": true, "priority": 50 },
+    { "name": "Wikimedia Commons", "url": "https://commons.wikimedia.org", "enabled": true, "priority": 60 },
+    { "name": "Pond5 Public Domain", "url": "https://pond5.com", "enabled": true, "priority": 70 },
+    { "name": "FedFlix", "url": "https://archive.org/details/FedFlix", "enabled": true, "priority": 80 },
+    { "name": "Smithsonian Open Access", "url": "https://smithsonian.org/openaccess", "enabled": true, "priority": 90 },
+    { "name": "American Archive of Public Broadcasting", "url": "https://americanarchive.org", "enabled": true, "priority": 100 }
+  ],
+  "news_video": [
+    { "name": "CNN", "url": "https://cnn.com", "enabled": true, "priority": 10 },
+    { "name": "BBC News", "url": "https://bbc.com/news", "enabled": true, "priority": 20 },
+    { "name": "AP Archive", "url": "https://youtube.com/@APArchive", "enabled": true, "priority": 30 },
+    { "name": "C-SPAN", "url": "https://c-span.org", "enabled": true, "priority": 40 },
+    { "name": "Haystack News", "url": "https://haystack.tv", "enabled": true, "priority": 50 },
+    { "name": "Africanews", "url": "https://africanews.com", "enabled": true, "priority": 60 },
+    { "name": "NPR", "url": "https://npr.org", "enabled": true, "priority": 70 },
+    { "name": "Stirr", "url": "https://stirr.com", "enabled": true, "priority": 80 },
+    { "name": "AllAfrica", "url": "https://allafrica.com", "enabled": true, "priority": 90 },
+    { "name": "Vanderbilt Television News Archive", "url": "https://tvnews.vanderbilt.edu", "enabled": true, "priority": 100 }
+  ],
+  "religious_spiritual": [
+    { "name": "GodTube", "url": "https://godtube.com", "enabled": true, "priority": 10 },
+    { "name": "CROSS.TV", "url": "https://cross.tv", "enabled": true, "priority": 20 },
+    { "name": "TBN", "url": "https://tbn.org", "enabled": true, "priority": 30 },
+    { "name": "Trinitas Film", "url": "https://trinitas.film", "enabled": true, "priority": 40 },
+    { "name": "Almajd TV", "url": "https://almajdtv.com", "enabled": true, "priority": 50 },
+    { "name": "Sermons Online", "url": "https://sermonsonline.com", "enabled": true, "priority": 60 },
+    { "name": "Bible Gateway Videos", "url": "https://biblegateway.com/videos", "enabled": true, "priority": 70 },
+    { "name": "Hidayat TV", "url": "https://hidayattv.com", "enabled": true, "priority": 80 },
+    { "name": "Daystar TV", "url": "https://daystar.com", "enabled": true, "priority": 90 },
+    { "name": "EWTN", "url": "https://ewtn.com", "enabled": true, "priority": 100 }
+  ],
+  "diy_howto": [
+    { "name": "YouTube Education", "url": "https://youtube.com/education", "enabled": true, "priority": 10 },
+    { "name": "TED Talks", "url": "https://ted.com", "enabled": true, "priority": 20 },
+    { "name": "Skillshare", "url": "https://skillshare.com", "enabled": true, "priority": 30 },
+    { "name": "Creativebug", "url": "https://creativebug.com", "enabled": true, "priority": 40 },
+    { "name": "Craftsy", "url": "https://craftsy.com", "enabled": true, "priority": 50 },
+    { "name": "Domestika", "url": "https://domestika.com", "enabled": true, "priority": 60 },
+    { "name": "Michaels Classes", "url": "https://michaels.com/classes", "enabled": true, "priority": 70 },
+    { "name": "Instructables", "url": "https://instructables.com", "enabled": true, "priority": 80 },
+    { "name": "5-Minute Crafts", "url": "https://5-minute-crafts.com", "enabled": true, "priority": 100 }
+  ]
 }

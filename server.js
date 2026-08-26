@@ -2179,7 +2179,15 @@ class SearchProvider {
 
   getCatalogSources(category = '') {
     const key = String(category || '').trim().toLowerCase();
-    const aliases = { movies: 'movies_series', series: 'movies_series', film: 'movies_series', anime: 'anime', music: 'music', general: 'general_video', video: 'general_video' };
+    const aliases = {
+      movies: 'movies_series', series: 'movies_series', film: 'movies_series', movies_series: 'movies_series',
+      anime: 'anime', music: 'music', general: 'general_video', video: 'general_video',
+      stock: 'stock_video', stock_video: 'stock_video', documentary: 'documentary_education', education: 'documentary_education',
+      documentary_education: 'documentary_education', archives: 'historical_archives', historical: 'historical_archives',
+      historical_archives: 'historical_archives', news: 'news_video', news_video: 'news_video',
+      religious: 'religious_spiritual', spiritual: 'religious_spiritual', religious_spiritual: 'religious_spiritual',
+      diy: 'diy_howto', howto: 'diy_howto', diy_howto: 'diy_howto'
+    };
     const sources = SOURCE_CATALOG[key] || SOURCE_CATALOG[aliases[key]] || [];
     return sources.filter((source) => source && source.enabled && source.url).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
   }
