@@ -32,7 +32,7 @@ function subtitleLanguage(url, label = '') {
   return m ? m[1].toLowerCase() : null;
 }
 function linkMeta(url, referer) {
-  const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null, likelySigned: false };
+  const meta = { originalUrl: url || null, expiresAt: null, ttlSeconds: null, referer: referer || null, likelySigned: false };
   try {
     const u = new URLParser(url);
     const raw = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at'].map((k) => u.searchParams.get(k)).find(Boolean);
@@ -87,7 +87,7 @@ function parseDash(manifest, base) {
 
 export async function runFallbackExtraction({ page, pageUrl, deep = false, quality: requestedQuality = 'auto', cookies = [], headers = {} }) {
   const found = new Map(), subtitles = new Map(), referers = new Map(), responseBodies = new Map(), mediaKeys = new Set();
-  const diagnostics = { fallback: true, requestsObserved: 0, mediaRequests: 0, framesVisited: 0, framesAttached: 0, playClicked: false, tabsClicked: 0, lazyIframes: 0, strategies: [], timedOut: false, captchaSuspected: false, drmSuspected: false, mseDetected: false, responseMediaCandidates: 0, validatedCandidates: 0, validationCandidates: 0, mediaSignal: 'no-media-requests', proxyConfigured: false, proxyUsed: null, proxySwitched: false, proxyError: null, proxyErrors: [], fallbackAttempted: true, fallbackSucceeded: false };
+  const diagnostics = { fallback: true, requestsObserved: 0, mediaRequests: 0, framesVisited: 0, framesAttached: 0, framesNavigated: 0, playClicked: false, tabsClicked: 0, lazyIframes: 0, strategies: [], timedOut: false, captchaSuspected: false, drmSuspected: false, mseDetected: false, responseMediaCandidates: 0, validatedCandidates: 0, validationCandidates: 0, mediaSignal: 'no-media-requests', proxyConfigured: false, proxyUsed: null, proxySwitched: false, proxyError: null, proxyErrors: [], fallbackAttempted: true, fallbackSucceeded: false };
   const add = (u, ref = pageUrl) => { const abs = resolveUrl(pageUrl, u); if (!abs || JUNK_RE.test(abs)) return; if (SUB_RE.test(abs)) subtitles.set(key(abs), { url: abs, language: subtitleLanguage(abs) || null, label: subtitleLanguage(abs) || 'subtitle', type: 'file' }); else if (MEDIA_RE.test(abs)) { found.set(key(abs), abs); referers.set(key(abs), ref); } };
   const onReq = (req) => { diagnostics.requestsObserved++; const u = req.url(); if (MEDIA_RE.test(u) || SUB_RE.test(u)) { const k = key(u); if (!mediaKeys.has(k)) { mediaKeys.add(k); diagnostics.mediaRequests++; } add(u, req.headers().referer || pageUrl); } };
   const onRes = async (res) => {
@@ -108,10 +108,55 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
       }
     } catch {}
   };
-  page.on('request', onReq); page.on('response', onRes);
+  const activateLazyIframes = async () => {
+    try {
+      const count = await page.evaluate(() => {
+        let changed = 0;
+        document.querySelectorAll('iframe').forEach((frame) => {
+          const value = frame.getAttribute('data-src') || frame.getAttribute('data-lazy-src') || frame.getAttribute('data-url') || frame.getAttribute('data-iframe');
+          if (value && !frame.getAttribute('src')) { frame.setAttribute('src', value); changed++; }
+        });
+        return changed;
+      });
+      diagnostics.lazyIframes += Number(count || 0);
+      if (count) diagnostics.strategies.push('fallback-lazy-iframes');
+    } catch {}
+  };
+  const interact = async () => {
+    try {
+      const clicked = await page.evaluate(() => {
+        let play = 0;
+        const re = /play|watch|تشغيل|مشاهدة/i;
+        document.querySelectorAll('button, [role="button"], .play, .watch, [data-play]').forEach((el) => {
+          const text = `${el.textContent || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-play') || ''}`;
+          if (re.test(text) && play < 3) { try { el.click(); play++; } catch {} }
+        });
+        return play;
+      });
+      diagnostics.playClicked = diagnostics.playClicked || Boolean(clicked);
+      if (clicked) diagnostics.strategies.push('fallback-play');
+    } catch {}
+    try {
+      const tabs = await page.evaluate(() => {
+        let clicked = 0;
+        const re = /server|quality|source|episode|سيرفر|جودة|ترجمة|حلقة/i;
+        document.querySelectorAll('button, [role="tab"], a, [data-server], [data-source]').forEach((el) => {
+          const text = `${el.textContent || ''} ${el.getAttribute('data-server') || ''} ${el.getAttribute('data-source') || ''}`;
+          if (re.test(text) && clicked < 6) { try { el.click(); clicked++; } catch {} }
+        });
+        return clicked;
+      });
+      diagnostics.tabsClicked += Number(tabs || 0);
+      if (tabs) diagnostics.strategies.push('fallback-player-tabs');
+    } catch {}
+  };
+  const onFrameAttached = () => { diagnostics.framesAttached++; };
+  const onFrameNavigated = () => { diagnostics.framesNavigated++; };
+  page.on('request', onReq); page.on('response', onRes); page.on('frameattached', onFrameAttached); page.on('framenavigated', onFrameNavigated);
   if (cookies?.length) await page.context().addCookies(cookies).catch(() => {});
   try {
     await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await activateLazyIframes();
     for (let round = 0; round < (deep ? 3 : 2); round++) {
       for (const frame of page.frames().slice(0, deep ? 20 : 10)) {
         diagnostics.framesVisited = Math.max(diagnostics.framesVisited, page.frames().length);
@@ -122,6 +167,8 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
         } catch {}
       }
       diagnostics.strategies.push(`fallback-round-${round + 1}`);
+      await activateLazyIframes();
+      await interact();
       await page.evaluate(() => { window.scrollBy(0, 500); document.querySelectorAll('video').forEach((v) => { try { v.muted = true; void v.play(); } catch {} }); }).catch(() => {});
       await new Promise((r) => setTimeout(r, deep ? 2500 : 1200));
     }
@@ -130,11 +177,11 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
       try {
         const res = await page.context().request.get(u, { timeout: 9000, failOnStatusCode: false, maxRedirects: 5, headers: { referer: referers.get(key(u)) || pageUrl } });
         const body = responseBodies.get(key(u)) || await res.text();
-        if (/^\s*#EXTM3U/m.test(body)) { const p = parseHls(body, u); p.variants.forEach((v) => found.set(key(v.url), v.url)); p.subtitles.forEach((s) => subtitles.set(key(s.url), s)); }
-        if (/<MPD[\s>]/i.test(body)) { const p = parseDash(body, u); p.variants.forEach((v) => found.set(key(v.url), v.url)); p.subtitles.forEach((s) => subtitles.set(key(s.url), s)); }
+        if (/^\s*#EXTM3U/m.test(body)) { const p = parseHls(body, u); p.variants.forEach((v) => { found.set(key(v.url), v.url); referers.set(key(v.url), referers.get(key(u)) || pageUrl); }); p.subtitles.forEach((s) => subtitles.set(key(s.url), s)); }
+        if (/<MPD[\s>]/i.test(body)) { const p = parseDash(body, u); p.variants.forEach((v) => { found.set(key(v.url), v.url); referers.set(key(v.url), referers.get(key(u)) || pageUrl); }); p.subtitles.forEach((s) => subtitles.set(key(s.url), s)); }
       } catch {}
     }
-  } finally { page.off('request', onReq); page.off('response', onRes); }
+  } finally { page.off('request', onReq); page.off('response', onRes); page.off('frameattached', onFrameAttached); page.off('framenavigated', onFrameNavigated); }
   const candidates = [...found.values()].map((url) => ({ url, quality: quality(url), bandwidth: 0, type: /\.m3u8|manifest|playlist/i.test(url) ? 'hls' : /\.mpd/i.test(url) ? 'dash' : /\.webm/i.test(url) ? 'webm' : 'mp4', referer: referers.get(key(url)) || pageUrl }));
   const variants = [];
   const toValidate = candidates.slice(0, 16);
@@ -144,9 +191,18 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
       const requestHeaders = { ...headers, referer: v.referer || pageUrl };
       if (v.type === 'mp4' || v.type === 'webm') requestHeaders.range = 'bytes=0-2047';
       const res = await page.context().request.get(v.url, { timeout: 5000, failOnStatusCode: false, maxRedirects: 5, headers: requestHeaders });
-      const ct = String(res.headers()['content-type'] || '').toLowerCase(); const body = (v.type === 'hls' || v.type === 'dash' || v.type === 'mp4' || v.type === 'webm') ? await res.body().then((b) => b.subarray(0, 4096)).catch(() => Buffer.alloc(0)) : Buffer.alloc(0); const text = body.toString('utf8');
-      const validType = v.type === 'hls' ? (/mpegurl|application\/vnd.apple.mpegurl/i.test(ct) || /^\s*#EXTM3U/m.test(text)) : v.type === 'dash' ? (/dash\+xml|application\/xml/i.test(ct) || /<MPD[\s>]/i.test(text)) : /^(video\/|application\/octet-stream)/i.test(ct) || (v.type === 'mp4' && text.includes('ftyp')) || (v.type === 'webm' && text.includes('webm'));
-      validation = { valid: res.status() >= 200 && res.status() < 400 && validType, status: res.status(), contentType: ct || null, reason: res.status() < 200 || res.status() >= 400 ? `http-${res.status()}` : (validType ? null : 'content-type-or-signature') };
+      const responseHeaders = res.headers();
+      const ct = String(responseHeaders['content-type'] || '').toLowerCase();
+      const body = (v.type === 'hls' || v.type === 'dash' || v.type === 'mp4' || v.type === 'webm') ? await res.body().then((b) => b.subarray(0, 4096)).catch(() => Buffer.alloc(0)) : Buffer.alloc(0);
+      const text = body.toString('utf8');
+      const contentLength = Number(responseHeaders['content-length'] || 0);
+      const hasRange = Boolean(responseHeaders['content-range']);
+      const isMp4 = v.type === 'mp4' && (body.includes(Buffer.from('ftyp')) || (/video\/mp4/i.test(ct) && (hasRange || contentLength > 4096)));
+      const isWebm = v.type === 'webm' && (body.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3])) || /video\/webm/i.test(ct));
+      const validType = v.type === 'hls' ? (/mpegurl|application\/vnd.apple.mpegurl/i.test(ct) || /^\s*#EXTM3U/m.test(text)) : v.type === 'dash' ? (/dash\+xml|application\/xml/i.test(ct) || /<MPD[\s>]/i.test(text)) : isMp4 || isWebm;
+      const invalidBody = /text\/html|application\/json/i.test(ct) || /^\s*(?:<!doctype html|<html|\{|\[)/i.test(text);
+      const valid = res.status() >= 200 && res.status() < 400 && validType && !invalidBody && !(v.type === 'mp4' && contentLength > 0 && contentLength < 4096);
+      validation = { valid, status: res.status(), contentType: ct || null, contentLength: contentLength || null, reason: res.status() < 200 || res.status() >= 400 ? `http-${res.status()}` : (valid ? null : invalidBody ? 'html-or-json-body' : 'content-type-signature-or-size') };
     } catch (e) { validation.reason = e.code || e.message; }
     v.validation = validation; return v;
   };
@@ -156,8 +212,9 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
   }
   diagnostics.validationCandidates = toValidate.length;
   diagnostics.fallbackSucceeded = Boolean(variants.length);
-  diagnostics.mediaSignal = diagnostics.validatedCandidates > 0 ? 'validated' : diagnostics.mediaRequests > 0 ? 'media-requests-without-accepted-primary' : 'no-media-requests';
+  diagnostics.mediaSignal = diagnostics.validatedCandidates > 0 ? 'validated' : (diagnostics.mediaRequests > 0 || candidates.length > 0) ? 'candidates-unvalidated' : 'no-media-requests';
   variants.sort((a, b) => qualityScore(b.quality) - qualityScore(a.quality) || Number(b.bandwidth || 0) - Number(a.bandwidth || 0));
   const picked = variants.find((v) => requestedQuality === 'auto' || v.quality === requestedQuality) || variants[0];
-  return { success: !!picked, primaryUrl: picked?.url || null, urls: { m3u8: variants.filter((v) => v.type === 'hls').map((v) => v.url), mp4: variants.filter((v) => v.type === 'mp4').map((v) => v.url), webm: variants.filter((v) => v.type === 'webm').map((v) => v.url), mpd: variants.filter((v) => v.type === 'dash').map((v) => v.url), segment: [], other: [] }, variants, subtitles: [...subtitles.values()], qualities: [...new Set(variants.map((v) => v.quality).filter((x) => x !== 'unknown'))], duration: 0, strategy: diagnostics.strategies.join('+'), quality: requestedQuality, validated: !!picked, linkMeta: picked ? linkMeta(picked.url, picked.referer) : null, error: picked ? null : 'Fallback extractor found no validated public media URL', errorCode: picked ? null : 'FALLBACK_NO_VALIDATED_STREAM', diagnostics, source: 'vd-pro-fallback', pageTitle: await page.title().catch(() => null), completedCleanly: true };
+  const fallbackErrorCode = picked ? null : candidates.length ? 'STREAM_FOUND_BUT_UNPLAYABLE' : 'NO_STREAM_FOUND';
+  return { success: !!picked, primaryUrl: picked?.url || null, urls: { m3u8: variants.filter((v) => v.type === 'hls').map((v) => v.url), mp4: variants.filter((v) => v.type === 'mp4').map((v) => v.url), webm: variants.filter((v) => v.type === 'webm').map((v) => v.url), mpd: variants.filter((v) => v.type === 'dash').map((v) => v.url), segment: [], other: [] }, variants, subtitles: [...subtitles.values()], qualities: [...new Set(variants.map((v) => v.quality).filter((x) => x !== 'unknown'))], duration: 0, strategy: diagnostics.strategies.join('+'), quality: requestedQuality, validated: !!picked, linkMeta: picked ? linkMeta(picked.url, picked.referer) : null, error: picked ? null : 'Fallback extractor found no validated public media URL', errorCode: fallbackErrorCode, diagnostics, source: 'vd-pro-fallback', pageTitle: await page.title().catch(() => null), completedCleanly: true };
 }

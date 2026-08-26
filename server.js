@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.5.1 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.6.0 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -1257,9 +1257,13 @@ class VideoExtractor {
     const started = Date.now();
     const diagnostics = {
       framesVisited: 0,
+      framesAttached: 0,
+      framesNavigated: 0,
       requestsObserved: 0,
       mediaRequests: 0,
       playClicked: false,
+      tabsClicked: 0,
+      lazyIframes: 0,
       strategies: [],
       captchaSuspected: false,
       drmSuspected: false,
@@ -1267,7 +1271,10 @@ class VideoExtractor {
       timedOut: false,
       softRetry: false,
       blobDetected: false,
-      adaptiveDeep: false
+      adaptiveDeep: false,
+      fallbackAttempted: false,
+      fallbackSucceeded: false,
+      mediaSignal: 'no-media-requests'
     };
 
     const result = {
@@ -1721,11 +1728,11 @@ class VideoExtractor {
     const picked = pickByQuality(validatedVariants.length ? validatedVariants : result.variants, quality);
     diagnostics.mediaCandidates = uniqueVariants.length;
     diagnostics.validatedCandidates = validatedVariants.length;
-    diagnostics.mediaSignal = diagnostics.mediaRequests === 0
-      ? 'no-media-requests'
-      : picked && picked.validation?.valid
-        ? 'media-request-validated'
-        : 'media-requests-without-accepted-primary';
+    diagnostics.mediaSignal = picked && picked.validation?.valid
+      ? 'validated'
+      : (diagnostics.mediaRequests > 0 || uniqueVariants.length > 0)
+        ? 'candidates-unvalidated'
+        : 'no-media-requests';
 
     if (picked && picked.url && picked.validation?.valid) {
       result.primaryUrl = picked.url;
@@ -2184,17 +2191,30 @@ class CacheManager {
   key(url, quality, deep) {
     return crypto.createHash('sha256').update(url + '::' + quality + '::' + (deep ? 1 : 0)).digest('hex');
   }
+  isReusable(data) {
+    if (!data || data.success !== true || data.validated !== true || !data.primaryUrl) return false;
+    const ttl = data.linkMeta?.ttlSeconds;
+    if (data.linkMeta?.likelySigned && typeof ttl === 'number' && ttl > 0 && ttl < 120) return false;
+    return true;
+  }
   async get(url, quality = 'auto', deep = false) {
     const k = this.key(url, quality, deep);
     if (this.l1.has(k)) {
       metrics.cacheHits.labels('l1').inc();
-      return this.l1.get(k);
+      const cached = this.l1.get(k);
+      if (this.isReusable(cached)) return cached;
+      this.l1.delete(k);
     }
     try {
       const raw = await redis.get('cache:' + k);
       if (raw) {
         metrics.cacheHits.labels('l2').inc();
-        return JSON.parse(raw);
+        const cached = JSON.parse(raw);
+        if (this.isReusable(cached)) {
+          this.l1.set(k, cached);
+          return cached;
+        }
+        await redis.del('cache:' + k).catch(() => {});
       }
     } catch (e) {}
     return null;
@@ -2313,7 +2333,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.5.1',
+    version: '4.6.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2461,7 +2481,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.5.1' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.6.0' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -2477,7 +2497,9 @@ function classifyExtractionFailure(result, primaryError = null) {
   else if (mediaRequests === 0) { failureClass = 'no-media-requests'; strategy = 'network-or-blocked-page'; }
   else if (!result?.primaryUrl && (mediaRequests > 0 || mediaCandidates > 0)) { failureClass = 'media-detected-not-selected'; strategy = 'filter-validate-with-context'; }
   else if (code === 'NO_STREAM_FOUND') { failureClass = 'no-public-media'; strategy = 'dom-script-iframe-scan'; }
-  d.failureClass = failureClass; d.failureStrategy = strategy; d.failureCode = code; d.mediaRequests = mediaRequests; d.mediaCandidates = mediaCandidates; d.failureObservedAt = new Date().toISOString();
+  d.failureClass = failureClass; d.failureStrategy = strategy; d.failureCode = code; d.mediaRequests = mediaRequests; d.mediaCandidates = mediaCandidates;
+  d.mediaSignal = d.mediaSignal || (mediaRequests > 0 || mediaCandidates > 0 ? 'candidates-unvalidated' : 'no-media-requests');
+  d.failureObservedAt = new Date().toISOString();
   return d;
 }
 
@@ -2816,13 +2838,13 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.5.1 listening on :' + PORT);
-  console.log('VD-PRO v4.5.1 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.6.0 listening on :' + PORT);
+  console.log('VD-PRO v4.6.0 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.5.1 starting...');
+    logger.info('Vd-Pro v4.6.0 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
