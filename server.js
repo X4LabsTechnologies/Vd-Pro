@@ -351,11 +351,16 @@ function extractLinkMeta(url, referer = null) {
   const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null, likelySigned: false };
   try {
     const parsed = new URLParser(url);
-    const keys = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at', 'valid_until', 'token_exp', 'e', 'st'];
+    const expiryKeys = ['expires', 'expire', 'expiry', 'exp', 'end', 'expires_at', 'valid_until', 'token_exp'];
     let raw = null;
-    for (const key of keys) {
+    for (const key of expiryKeys) {
       raw = parsed.searchParams.get(key);
       if (raw) break;
+    }
+    if (!raw) {
+      const e = Number(parsed.searchParams.get('e'));
+      // Some CDNs use `e` as a short TTL/duration, not an epoch expiry.
+      if (Number.isFinite(e) && e > 1_000_000_000) raw = String(e);
     }
     if (raw) {
       const numeric = Number(raw);
@@ -1103,9 +1108,10 @@ class ResultValidator {
       });
       const headers = response.headers() || {};
       const contentType = headers['content-type'] || '';
-      const cl = headers['content-length'] ? parseInt(headers['content-length'], 10) : null;
+      const range = headers['content-range'] || '';
+      const cl = /\/\s*(\d+)\s*$/.test(range) ? parseInt(range.match(/\/\s*(\d+)\s*$/)[1], 10) : (headers['content-length'] ? parseInt(headers['content-length'], 10) : null);
       const body = await response.body().catch(() => Buffer.alloc(0));
-      return this.inspect(url, response.status(), contentType, body, cl, headers['content-range'] || '');
+      return this.inspect(url, response.status(), contentType, body, cl, range);
     } catch (e) {
       return { valid: false, reason: 'PAGE_VALIDATION_FAILED' };
     }
