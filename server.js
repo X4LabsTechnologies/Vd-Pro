@@ -81,8 +81,6 @@ const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000,
 const SEARCH_CATALOG_MAX_SOURCES = envMs('SEARCH_CATALOG_MAX_SOURCES', 18, 4, 80);
 const SEARCH_CANDIDATE_EXTRACT_MS = envMs('SEARCH_CANDIDATE_EXTRACT_MS', 30000, 15000, 90000);
 const SEARCH_QUERY_CONCURRENCY = envMs('SEARCH_QUERY_CONCURRENCY', 4, 1, 8);
-const ENABLE_CATALOG_SEARCH = /^(1|true|yes|on)$/i.test(String(process.env.ENABLE_CATALOG_SEARCH || 'false'));
-const SEARCH_PROVIDER_TIMEOUT_MS = envMs('SEARCH_PROVIDER_TIMEOUT_MS', 6000, 2000, 15000);
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
   const [name, urls] = entry.split('=').map((part) => part?.trim());
   return name && urls ? [name.toLowerCase(), urls.split('|').map((url) => url.trim()).filter(Boolean)] : null;
@@ -1925,13 +1923,6 @@ class SearchProvider {
     );
   }
 
-  isExcludedPlatform(url = '') {
-    try {
-      const host = new URLParser(String(url)).hostname.toLowerCase().replace(/^www\./, '');
-      return ['netflix.com', 'primevideo.com', 'amazon.com', 'disneyplus.com', 'hulu.com', 'max.com', 'hbomax.com', 'paramountplus.com', 'peacocktv.com', 'apple.com'].some((domain) => host === domain || host.endsWith('.' + domain));
-    } catch (e) { return false; }
-  }
-
   add(map, item) {
     const url = item.url;
     if (!url || !/^https?:\/\//i.test(url)) return;
@@ -1942,11 +1933,11 @@ class SearchProvider {
       (item.boost || 0);
     const descriptor = url + ' ' + (item.title || '') + ' ' + (item.name || '');
     const d = descriptor.toLowerCase();
-    const watchBoost = /watch|stream|online|episode|season|movie|series|film|play|embed|player|video|youtube|vimeo|مشاهدة|فيديو|حلقة/.test(d)
+    const watchBoost = /watch|stream|online|episode|season|movie|series|film|play|embed|player|video/.test(d)
       ? 0.15
       : 0;
     const informationPenalty =
-      /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram|login|signin|sign-in|signup|sign-up|account|myapps|auth|oauth|sso|admin|dashboard|portal|apk|trending|popular|homepage/.test(d) ? 0.35 : 0;
+      /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram|login|signin|sign-in|signup|sign-up|account|myapps|auth|oauth|sso|admin|dashboard|portal/.test(d) ? 0.35 : 0;
     const score = Math.max(0, rawScore + watchBoost - informationPenalty);
     const candidateClass = infoCandidate ? 'info' : 'watch';
     const prev = map.get(url);
@@ -1969,12 +1960,11 @@ class SearchProvider {
     }
   }
 
-  async searchDuckDuckGoAPI(query, map, signal) {
+  async searchDuckDuckGoAPI(query, map) {
     try {
       const { data } = await httpClient.get('https://api.duckduckgo.com/', {
         params: { q: query, format: 'json', no_redirect: 1, no_html: 1, skip_disambig: 1 },
-        timeout: SEARCH_PROVIDER_TIMEOUT_MS,
-        signal
+        timeout: 10000
       });
       if (data && data.Heading && data.AbstractURL) {
         this.add(map, {
@@ -2007,12 +1997,11 @@ class SearchProvider {
     }
   }
 
-  async searchDuckDuckGoHtml(query, map, signal) {
+  async searchDuckDuckGoHtml(query, map) {
     try {
       const { data } = await httpClient.get('https://html.duckduckgo.com/html/', {
         params: { q: query },
-        timeout: SEARCH_PROVIDER_TIMEOUT_MS,
-        signal,
+        timeout: 12000,
         headers: { Accept: 'text/html,application/xhtml+xml' }
       });
       const $ = cheerio.load(String(data || ''));
@@ -2044,12 +2033,11 @@ class SearchProvider {
     }
   }
 
-  async searchBing(query, map, signal) {
+  async searchBing(query, map) {
     try {
       const { data } = await httpClient.get('https://www.bing.com/search', {
         params: { q: query, count: 10, setlang: 'ar' },
-        timeout: SEARCH_PROVIDER_TIMEOUT_MS,
-        signal,
+        timeout: 12000,
         headers: { Accept: 'text/html,application/xhtml+xml' }
       });
       const $ = cheerio.load(String(data || ''));
@@ -2450,11 +2438,10 @@ class SearchProvider {
     const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
     const queryVariants = [...new Set(titleForms.flatMap((term) => [
       `${term}${identitySuffix}${typeSuffix}`,
-      `${term}${identitySuffix}${typeSuffix} video`,
       `${term}${identitySuffix}${typeSuffix} watch`,
+      `${term}${identitySuffix}${typeSuffix} video`,
       `${term}${identitySuffix}${typeSuffix} play`,
-      `${term}${identitySuffix}${typeSuffix} مشاهدة`,
-      `${term}${identitySuffix}${typeSuffix} فيديو`
+      `${term}${identitySuffix}${typeSuffix} مشاهدة`
     ]))].map((variant) => scoped + '"' + variant + '"');
     const watchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' watch stream episode movie series';
     const arabicWatchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' مشاهدة فيلم مسلسل حلقة';
@@ -2474,8 +2461,8 @@ class SearchProvider {
 
     if (options.catalogFast) {
       await runTier(queryVariants.flatMap((variant) => [
-        this.searchDuckDuckGoHtml(variant, map, options.signal),
-        this.searchBing(variant, map, options.signal)
+        this.searchDuckDuckGoHtml(variant, map),
+        this.searchBing(variant, map)
       ]));
       let fastResults = [...map.values()].filter((r) => this.siteMatches(r, siteInfo));
       fastResults.sort((a, b) => b.score - a.score);
@@ -2499,23 +2486,23 @@ class SearchProvider {
 
     // Tier 1: multi-query broad discovery. Every variant is merged into the same de-duplicated map.
     await runTier(queryVariants.flatMap((variant) => [
-      this.searchDuckDuckGoHtml(variant, map, options.signal),
-      this.searchBing(variant, map, options.signal),
-      this.searchDuckDuckGoAPI(variant, map, options.signal)
+      this.searchDuckDuckGoHtml(variant, map),
+      this.searchBing(variant, map),
+      this.searchDuckDuckGoAPI(variant, map)
     ]));
 
     // Tier 2: watch-page intent and optional domain restriction.
     if (!hasStrongWatch()) {
       await runTier([
         ...queryVariants.slice(1).flatMap((variant) => [
-          this.searchDuckDuckGoHtml(variant + ' watch', map, options.signal),
-          this.searchBing(variant + ' watch', map, options.signal)
+          this.searchDuckDuckGoHtml(variant + ' watch', map),
+          this.searchBing(variant + ' watch', map)
         ]),
-        this.searchDuckDuckGoHtml(watchQuery, map, options.signal),
-        this.searchBing(watchQuery, map, options.signal),
-        this.searchDuckDuckGoHtml(arabicWatchQuery, map, options.signal),
-        this.searchBing(arabicWatchQuery, map, options.signal),
-        this.searchDuckDuckGoAPI(watchQuery, map, options.signal)
+        this.searchDuckDuckGoHtml(watchQuery, map),
+        this.searchBing(watchQuery, map),
+        this.searchDuckDuckGoHtml(arabicWatchQuery, map),
+        this.searchBing(arabicWatchQuery, map),
+        this.searchDuckDuckGoAPI(watchQuery, map)
       ]);
     }
 
@@ -2529,7 +2516,6 @@ class SearchProvider {
     }
 
     let results = [...map.values()].sort((a, b) => b.score - a.score);
-    if (options.excludePlatforms) results = results.filter((r) => !this.isExcludedPlatform(r.url));
     if (siteInfo.raw) results = results.filter((r) => this.siteMatches(r, siteInfo));
     const strong = results.filter((r) => r.score >= 0.12);
     if (strong.length >= 2) results = strong;
@@ -2791,7 +2777,7 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
 
 app.get('/api/v1/search', verifyToken, async (req, res) => {
   try {
-      const { q, site = '', category = '', extract, quality = 'auto', deep, excludePlatforms } = req.query;
+      const { q, site = '', category = '', extract, quality = 'auto', deep } = req.query;
     if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
     if (String(q).length > 300) return res.status(400).json({ success: false, error: 'q too long', code: 'QUERY_TOO_LONG' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
@@ -2805,8 +2791,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
           category: String(category || '').trim(),
           userId,
           quality,
-          deep: deep === '1' || deep === 'true',
-          excludePlatforms: excludePlatforms === '1' || excludePlatforms === 'true'
+          deep: deep === '1' || deep === 'true'
         },
         { timeout: doExtract ? HARD_EXTRACT_MS + 30000 : HARD_SEARCH_MS + 10000, attempts: 2 }
       ),
@@ -2890,13 +2875,6 @@ function classifyExtractionFailure(result, primaryError = null) {
 
 async function extractWithFallback(url, page, proxy, userId, options = {}) {
   const startedAt = Date.now();
-  const signal = options.signal;
-  const abortPage = () => {
-    if (!signal?.aborted) return;
-    try { page?.context()?.close().catch(() => {}); } catch (e) {}
-  };
-  signal?.addEventListener('abort', abortPage, { once: true });
-  if (signal?.aborted) throw Object.assign(new Error('JOB_ABORTED'), { code: 'JOB_ABORTED' });
   let primary = null;
   let primaryError = null;
   try {
@@ -2904,7 +2882,6 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
   } catch (error) {
     primaryError = error;
   }
-  if (signal?.aborted) throw Object.assign(new Error('JOB_ABORTED'), { code: 'JOB_ABORTED' });
   const primaryDiagnostics = classifyExtractionFailure(primary || { success: false, errorCode: primaryError?.code || 'EXTRACTION_ERROR' }, primaryError);
   const shouldFallback = Boolean(
     primaryError ||
@@ -2948,12 +2925,11 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
     if (primary) return { ...primary, diagnostics: classifyExtractionFailure({ ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message, fallbackErrorCode: error.code || 'FALLBACK_ERROR' } }, primaryError) };
     const failed = { success: false, error: primaryError?.message || error.message, errorCode: primaryError?.code || error.code || 'EXTRACTION_ERROR', diagnostics: { fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message } }; failed.diagnostics = classifyExtractionFailure(failed, primaryError); return failed;
   } finally {
-    signal?.removeEventListener('abort', abortPage);
     if (fallbackCtx) browserPool.release(fallbackCtx);
   }
 }
 
-async function processExtractionJob(job, signal) {
+async function processExtractionJob(job) {
   const jobStartedAt = Date.now();
   let ctx = null;
   let proxy = null;
@@ -2962,7 +2938,7 @@ async function processExtractionJob(job, signal) {
 
     if (job.data.type === 'search') {
       const results = await withTimeout(
-        new SearchProvider().searchByName(job.data.search, job.data.site, { signal, excludePlatforms: job.data.excludePlatforms }),
+        new SearchProvider().searchByName(job.data.search, job.data.site),
         HARD_SEARCH_MS,
         'SEARCH_TIMEOUT'
       );
@@ -2996,7 +2972,7 @@ async function processExtractionJob(job, signal) {
     if (job.data.type === 'search_extract') {
       const searchProvider = new SearchProvider();
       let catalogResults = [];
-      if (ENABLE_CATALOG_SEARCH && job.data.category) {
+      if (job.data.category) {
         try {
           catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category, job.data.site), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
         } catch (catalogError) {
@@ -3008,7 +2984,7 @@ async function processExtractionJob(job, signal) {
       );
       const movieCatalogOnly = String(job.data.category || '').trim().toLowerCase() === 'movies_series' && !String(job.data.site || '').trim();
       const internetResults = !catalogHasStrongWatch && !movieCatalogOnly
-        ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site, { signal }), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
+        ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
         : [];
       // Merge every provider/catalog result before classification. A URL can be
       // returned by several providers; keep the strongest representation only.
@@ -3062,8 +3038,7 @@ async function processExtractionJob(job, signal) {
           const candidateResult = await withTimeout(
             extractWithFallback(candidate.url, page, proxy, userId, {
               quality: job.data.quality,
-              deep: job.data.deep,
-              signal
+              deep: job.data.deep
             }),
             Math.min(SEARCH_CANDIDATE_EXTRACT_MS, remaining),
             'SEARCH_CANDIDATE_TIMEOUT'
@@ -3093,8 +3068,7 @@ async function processExtractionJob(job, signal) {
 
     const runOnCurrentProxy = async () => applyMediaFlowProxy(await extractWithFallback(job.data.url, ctx.page, proxy, userId, {
       quality: job.data.quality,
-      deep: job.data.deep,
-      signal
+      deep: job.data.deep
     }));
 
     let result = await runOnCurrentProxy();
@@ -3187,10 +3161,8 @@ async function processExtractionJob(job, signal) {
 }
 
 extractionQueue.process(2, async (job) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), JOB_PROCESS_TIMEOUT_MS);
   try {
-    return await withTimeout(processExtractionJob(job, controller.signal), JOB_PROCESS_TIMEOUT_MS, 'JOB_PROCESS_TIMEOUT');
+    return await withTimeout(processExtractionJob(job), JOB_PROCESS_TIMEOUT_MS, 'JOB_PROCESS_TIMEOUT');
   } catch (error) {
     logger.error({ jobId: job.id, error: error.message }, 'Job hard timeout');
     const errorCode = error.code || 'JOB_PROCESS_TIMEOUT';
@@ -3201,9 +3173,6 @@ extractionQueue.process(2, async (job) => {
       duration: JOB_PROCESS_TIMEOUT_MS / 1000,
       diagnostics: classifyExtractionFailure({ success: false, errorCode, diagnostics: { timedOut: true, mediaRequests: 0, mediaCandidates: 0 } }, error)
     };
-  } finally {
-    clearTimeout(timer);
-    if (!controller.signal.aborted) controller.abort();
   }
 });
 
