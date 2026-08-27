@@ -2916,7 +2916,29 @@ async function processExtractionJob(job) {
       const internetResults = !catalogHasStrongWatch
         ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
         : [];
-      const results = [...catalogResults, ...internetResults];
+      // Merge every provider/catalog result before classification. A URL can be
+      // returned by several providers; keep the strongest representation only.
+      const mergedResults = new Map();
+      for (const item of [...catalogResults, ...internetResults]) {
+        if (!item?.url) continue;
+        let key = String(item.url).trim();
+        try {
+          const parsed = new URLParser(key);
+          parsed.hash = '';
+          key = parsed.href.toLowerCase();
+        } catch (e) {}
+        const previous = mergedResults.get(key);
+        if (!previous || Number(item.matchScore ?? item.score ?? 0) > Number(previous.matchScore ?? previous.score ?? 0)) {
+          mergedResults.set(key, item);
+        }
+      }
+      const results = [...mergedResults.values()].sort((a, b) => {
+        const aInfo = searchProvider.isInfoCandidate(a.url, a.source, a.title || a.name) || a.candidateClass === 'info';
+        const bInfo = searchProvider.isInfoCandidate(b.url, b.source, b.title || b.name) || b.candidateClass === 'info';
+        const aWatch = searchProvider.isWatchCandidate(a) && !aInfo;
+        const bWatch = searchProvider.isWatchCandidate(b) && !bInfo;
+        return Number(bWatch) - Number(aWatch) || Number(b.matchScore ?? b.score ?? 0) - Number(a.matchScore ?? a.score ?? 0);
+      });
       if (!results.length) {
         return { success: false, query: job.data.search, results: [], errorCode: 'NO_SEARCH_RESULTS' };
       }
@@ -2939,7 +2961,7 @@ async function processExtractionJob(job) {
       }
       const candidateAttempts = [];
       let selected = null;
-      for (const candidate of watchCandidates.slice(0, 5)) {
+      for (const candidate of watchCandidates.slice(0, 3)) {
         const remaining = Math.max(20000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - jobStartedAt) - 5000);
         if (remaining < 12000 && candidateAttempts.length) break;
         try {
@@ -2966,7 +2988,7 @@ async function processExtractionJob(job) {
         matchedName: chosen.candidate.name,
         matchedUrl: chosen.candidate.url,
         pageUrl: chosen.candidate.pageUrl || chosen.candidate.url,
-        watchCandidates: watchCandidates.slice(0, 10),
+        watchCandidates: watchCandidates.slice(0, 3),
         infoCandidates: infoCandidates.slice(0, 10),
         searchResults: results.slice(0, 10),
         candidateAttempts,
