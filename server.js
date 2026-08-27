@@ -2235,6 +2235,16 @@ class SearchProvider {
       domain = new URLParser(candidate).hostname.toLowerCase().replace(/^www\./, '');
       if (!domain.includes('.') || /[^a-z0-9.-]/i.test(domain)) domain = '';
     } catch (e) {}
+    if (!domain && raw) {
+      const normalizedName = raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+      const catalogSource = Object.values(SOURCE_CATALOG).flat().find((source) => {
+        const name = String(source?.name || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+        return name === normalizedName || name.replace(/\s+/g, '') === normalizedName.replace(/\s+/g, '');
+      });
+      if (catalogSource?.url) {
+        try { domain = new URLParser(catalogSource.url).hostname.toLowerCase().replace(/^www\./, ''); } catch (e) {}
+      }
+    }
     const tokens = raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').split(/\s+/).filter((x) => x.length > 1 && !['www','com','net','org','live','tv'].includes(x));
     return { raw, domain, tokens };
   }
