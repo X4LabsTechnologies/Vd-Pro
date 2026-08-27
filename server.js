@@ -777,9 +777,16 @@ class BrowserContextPool {
     const page = await context.newPage();
     await page.addInitScript(StealthGenerator.script());
     await page.addInitScript(PAGE_HOOK_SCRIPT);
-    await page.route('**/*', (route) => {
+    await page.route('**/*', async (route) => {
+      const requestUrl = route.request().url();
       const t = route.request().resourceType();
       if (t === 'image' || t === 'font') return route.abort().catch(() => {});
+      try {
+        const parsed = new URLParser(requestUrl);
+        if (['http:', 'https:'].includes(parsed.protocol) && SSRFValidator.isPrivate(parsed.hostname)) {
+          return route.abort('blockedbyclient').catch(() => {});
+        }
+      } catch (e) {}
       return route.continue().catch(() => {});
     });
     return { context, page, createdAt: Date.now(), usage: 0, proxy, pool: this };
@@ -1892,7 +1899,7 @@ class VideoExtractor {
 
 class SearchProvider {
   static TITLE_STOPWORDS = new Set([
-    'watch', 'stream', 'online', 'episode', 'season', 'movie', 'movies', 'series', 'film', 'films', 'play', 'embed', 'player', 'video', 'full', 'hd', 'web', ' مترجم', 'فيلم', 'مسلسل', 'حلقة', 'مشاهدة', 'تحميل', 'مباشر', 'الحلقة', 'الموسم'
+    'watch', 'stream', 'online', 'episode', 'season', 'movie', 'movies', 'series', 'film', 'films', 'play', 'embed', 'player', 'video', 'full', 'hd', 'web', 'مترجم', 'فيلم', 'مسلسل', 'حلقة', 'مشاهدة', 'تحميل', 'مباشر', 'الحلقة', 'الموسم'
   ]);
 
   isInfoCandidate(url = '', source = '', title = '') {
@@ -2148,9 +2155,10 @@ class SearchProvider {
   }
 
   matchesRequestedTitle(query = '', item = {}) {
-    const tokens = String(query || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((token) => token.length > 1 && !SearchProvider.TITLE_STOPWORDS.has(token));
+    const normalize = (value) => String(value || '').toLowerCase().normalize('NFKC').replace(/[\u064B-\u065F\u0670]/g, '').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const tokens = normalize(query).split(' ').filter((token) => token.length > 1 && !SearchProvider.TITLE_STOPWORDS.has(token));
     if (!tokens.length) return false;
-    const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
+    const descriptor = normalize(`${item.url || ''} ${item.title || ''} ${item.name || ''}`);
     const hits = tokens.filter((token) => descriptor.includes(token));
     const numeric = tokens.filter((token) => /^\d{4}$|^s\d+$|^e\d+$/i.test(token));
     const numericHits = numeric.filter((token) => descriptor.includes(token));
@@ -2175,7 +2183,10 @@ class SearchProvider {
     if (!siteInfo.raw) return true;
     const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
     if (siteInfo.domain) {
-      try { return new URLParser(item.url).hostname.toLowerCase().replace(/^www\./, '').endsWith(siteInfo.domain); } catch (e) { return false; }
+      try {
+        const hostname = new URLParser(item.url).hostname.toLowerCase().replace(/^www\./, '');
+        return hostname === siteInfo.domain || hostname.endsWith('.' + siteInfo.domain);
+      } catch (e) { return false; }
     }
     return siteInfo.tokens.length ? siteInfo.tokens.some((token) => descriptor.includes(token)) : true;
   }
@@ -2229,15 +2240,20 @@ class SearchProvider {
     }
     const unique = new Map();
     for (const item of collected) {
-      const key = item.url;
+      let key = item.url;
+      try {
+        const parsed = new URLParser(item.url);
+        parsed.hash = '';
+        key = parsed.href;
+      } catch (e) {}
       if (!key || unique.has(key)) continue;
       unique.set(key, item);
     }
-    return [...unique.values()].sort((a, b) => Number(b.matchScore || 0) - Number(a.matchScore || 0));
+    return [...unique.values()].sort((a, b) => Number(b.score ?? b.matchScore ?? 0) - Number(a.score ?? a.matchScore ?? 0));
   }
 
   async searchByName(query, site = '', options = {}) {
-    const q = String(query || '').trim();
+    const q = String(query || '').trim().slice(0, 300);
     if (!q) return [];
     const siteInfo = this.normalizeSiteHint(site);
     const map = new Map();
@@ -2412,8 +2428,13 @@ const extractionQueue = new Queue('vd-pro-v44', REDIS_URL, {
 });
 
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-if (ALLOWED_ORIGINS.length) app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
-else app.use(cors());
+if (ALLOWED_ORIGINS.length) {
+  app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
+} else if (NODE_ENV === 'production') {
+  app.use(cors({ origin: false }));
+} else {
+  app.use(cors());
+}
 app.use(express.json({ limit: '1mb' }));
 
 app.use((req, res, next) => {
@@ -2430,8 +2451,9 @@ app.use((req, res, next) => {
 
 const verifyToken = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ success: false, error: 'No token', code: 'NO_TOKEN' });
+    const auth = String(req.headers.authorization || '');
+    if (!/^Bearer\s+\S+$/i.test(auth)) return res.status(401).json({ success: false, error: 'No token', code: 'NO_TOKEN' });
+    const token = auth.replace(/^Bearer\s+/i, '').trim();
     const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
     if (db) {
       const user = await db.collection('users').findOne({ apiKey: decoded.apiKey });
@@ -2508,9 +2530,10 @@ app.post('/api/v1/auth/register', async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ success: false, error: 'Missing fields' });
-    if (String(password).length < 8) return res.status(400).json({ success: false, error: 'Weak password' });
-    if (!db) return res.status(503).json({ success: false, error: 'DB unavailable' });
     const normalized = String(email).trim().toLowerCase();
+    if (normalized.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return res.status(400).json({ success: false, error: 'Invalid email' });
+    if (String(password).length < 8 || String(password).length > 256) return res.status(400).json({ success: false, error: 'Weak password' });
+    if (!db) return res.status(503).json({ success: false, error: 'DB unavailable' });
     if (await db.collection('users').findOne({ email: normalized })) {
       return res.status(400).json({ success: false, error: 'Email exists' });
     }
@@ -2552,7 +2575,8 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
     singleFlight.set(flightKey, job.finished().catch(() => null));
     res.status(202).json({ success: true, jobId: job.id, statusUrl: '/api/v1/jobs/' + job.id });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    logger.error({ error: e.message }, 'Extraction request failed');
+    res.status(/QUEUE|Redis|connection|timeout/i.test(String(e.message || '')) ? 503 : 500).json({ success: false, error: 'Extraction request failed', code: 'EXTRACTION_REQUEST_ERROR' });
   }
 });
 
@@ -2560,6 +2584,7 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
   try {
       const { q, site = '', category = '', extract, quality = 'auto', deep } = req.query;
     if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
+    if (String(q).length > 300) return res.status(400).json({ success: false, error: 'q too long', code: 'QUERY_TOO_LONG' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
     const doExtract = extract === '1' || extract === 'true';
     const job = await withTimeout(
@@ -2588,7 +2613,8 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
       statusUrl: '/api/v1/jobs/' + job.id
     });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    logger.error({ error: e.message }, 'Search request failed');
+    res.status(/QUEUE|Redis|connection|timeout/i.test(String(e.message || '')) ? 503 : 500).json({ success: false, error: 'Search request failed', code: 'SEARCH_REQUEST_ERROR' });
   }
 });
 
@@ -2952,7 +2978,8 @@ wss.on('connection', async (ws, req) => {
   let uid = null;
   try {
     const u = new URL(req.url || '', 'http://' + req.headers.host);
-    const token = u.searchParams.get('token');
+    const headerToken = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null;
+    const token = headerToken || u.searchParams.get('token');
     if (!token) return ws.close(4401, 'Unauthorized');
     const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
     if (db) {

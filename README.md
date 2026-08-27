@@ -49,12 +49,17 @@ npm run prod
 
 ## إعداد البيئة
 
-انسخ `.env.example` إلى `.env` واملأ القيم المناسبة. في بيئة الإنتاج يجب أن يكون `JWT_SECRET` موجودًا وطوله 32 حرفًا على الأقل.
+انسخ `.env.example` إلى `.env` واملأ القيم المناسبة. في بيئة الإنتاج يجب أن يكون `JWT_SECRET` موجودًا وطوله 32 حرفًا على الأقل. كما يجب ضبط `ALLOWED_ORIGINS` صراحةً في الإنتاج بدل تركه فارغًا.
 
 ```env
 NODE_ENV=production
 PORT=3000
 JWT_SECRET=ضع_سرًا_عشوائيًا_طويلًا_هنا
+ALLOWED_ORIGINS=https://your-frontend.example
+WIDEVINE_CDM_URL=https://getwvkeys.cc/api/remotecdm/widevine
+WIDEVINE_CDM_SECRET=ضع_السر_في_بيئة_التشغيل_فقط
+WIDEVINE_TIMEOUT_MS=20000
+CHASER_CF_TIMEOUT_MS=30000
 MONGODB_URL=mongodb+srv://USER:PASSWORD@HOST/vd-pro
 REDIS_URL=redis://default:PASSWORD@HOST:PORT
 ```
@@ -93,7 +98,7 @@ BROWSER_POOL_COUNT=1
 BROWSER_CONTEXTS_PER_POOL=2
 ```
 
-لا يضيف ضبط بروكسي المتصفح أي تجاوز للحماية؛ هو مسار اختياري لتوجيه جلسة المتصفح عندما تكون قيمة صالحة متاحة. لا تضع الأسرار داخل المستودع.
+لا يضيف ضبط بروكسي المتصفح أي تجاوز للحماية؛ هو مسار اختياري لتوجيه جلسة المتصفح عندما تكون قيمة صالحة متاحة. لا تضع الأسرار داخل المستودع. تكاملات Widevine وCloudflare اختيارية، وتستخدم متغيرات بيئة منفصلة مع مهلة محددة، ولا تُسجّل الأسرار أو الروابط الكاملة في السجل.
 
 ### ربط MediaFlow HLS
 
