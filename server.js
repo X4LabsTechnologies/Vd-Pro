@@ -78,6 +78,7 @@ const HARD_EXTRACT_MS = envMs('HARD_EXTRACT_MS', 110000, 10000, 15 * 60 * 1000);
 const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
 const CATALOG_SEARCH_MS = envMs('CATALOG_SEARCH_MS', 18000, 5000, 2 * 60 * 1000);
 const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000, 15000);
+const SEARCH_QUERY_CONCURRENCY = envMs('SEARCH_QUERY_CONCURRENCY', 4, 1, 8);
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
   const [name, urls] = entry.split('=').map((part) => part?.trim());
   return name && urls ? [name.toLowerCase(), urls.split('|').map((url) => url.trim()).filter(Boolean)] : null;
@@ -2376,7 +2377,13 @@ class SearchProvider {
     const watchQuery = scoped + '"' + q + '" watch stream episode movie series';
     const arabicWatchQuery = scoped + '"' + q + '" مشاهدة فيلم مسلسل حلقة';
     const runTier = async (tasks) => {
-      await Promise.all(tasks);
+      for (let offset = 0; offset < tasks.length; offset += SEARCH_QUERY_CONCURRENCY) {
+        const batch = tasks.slice(offset, offset + SEARCH_QUERY_CONCURRENCY);
+        const settled = await Promise.allSettled(batch);
+        settled.filter((result) => result.status === 'rejected').forEach((result) => {
+          logger.debug({ error: result.reason?.message || String(result.reason) }, 'Search provider query failed');
+        });
+      }
       return [...map.values()];
     };
     const hasStrongWatch = () => [...map.values()].some((item) =>
