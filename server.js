@@ -78,6 +78,11 @@ const HARD_EXTRACT_MS = envMs('HARD_EXTRACT_MS', 110000, 10000, 15 * 60 * 1000);
 const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
 const CATALOG_SEARCH_MS = envMs('CATALOG_SEARCH_MS', 18000, 5000, 2 * 60 * 1000);
 const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000, 15000);
+const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
+  const [name, urls] = entry.split('=').map((part) => part?.trim());
+  return name && urls ? [name.toLowerCase(), urls.split('|').map((url) => url.trim()).filter(Boolean)] : null;
+}).filter(Boolean);
+const SOURCE_DOMAIN_ALIAS_MAP = new Map(SOURCE_DOMAIN_ALIASES);
 const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
 const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
@@ -2220,7 +2225,12 @@ class SearchProvider {
       languages: 'language_learning', language: 'language_learning', language_learning: 'language_learning'
     };
     const sources = SOURCE_CATALOG[key] || SOURCE_CATALOG[aliases[key]] || [];
-    return sources.filter((source) => source && source.enabled && source.url).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
+    const expanded = sources.flatMap((source) => {
+      if (!source || !source.enabled || !source.url) return [];
+      const aliases = SOURCE_DOMAIN_ALIAS_MAP.get(String(source.name || '').toLowerCase()) || [];
+      return [source, ...aliases.map((url, index) => ({ ...source, url, priority: Number(source.priority || 999) + (index + 1) / 1000, aliasOf: source.url }))];
+    });
+    return expanded.sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
   }
 
   async searchSourceDirect(query, source) {
@@ -2304,8 +2314,8 @@ class SearchProvider {
     const sources = this.getCatalogSources(category).filter((source) => {
       if (!requested.domain) return true;
       try {
-        const host = new URLParser(source.url).hostname.toLowerCase();
-        return host === requested.domain || host.endsWith('.' + requested.domain);
+        const hosts = [source.url, source.aliasOf].filter(Boolean).map((url) => new URLParser(url).hostname.toLowerCase().replace(/^www\./, ''));
+        return hosts.some((host) => host === requested.domain || host.endsWith('.' + requested.domain));
       } catch (e) { return false; }
     });
     const collected = [];
