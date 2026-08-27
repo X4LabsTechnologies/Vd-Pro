@@ -2251,6 +2251,7 @@ class SearchProvider {
           url,
           pageUrl: url,
           score,
+          matchScore: Math.round(score * 1000) / 1000,
           source: 'catalog-direct',
           type: item.type || 'link',
           year: item.year || null,
