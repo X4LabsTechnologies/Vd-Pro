@@ -2150,6 +2150,7 @@ class SearchProvider {
 
   isWatchCandidate(item = {}) {
     const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
+    if (item.source === 'catalog-direct' && item.candidateClass === 'watch') return true;
     if (this.isInfoCandidate(item.url, item.source, item.title || item.name)) return false;
     return /watch|stream|online|episode|season|movie|movies|series|film|play|embed|player|video|\/movies?\//i.test(descriptor);
   }
@@ -2221,6 +2222,72 @@ class SearchProvider {
     return sources.filter((source) => source && source.enabled && source.url).sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
   }
 
+  async searchSourceDirect(query, source) {
+    const base = new URLParser(source.url);
+    const origin = base.origin;
+    const q = encodeURIComponent(String(query || '').trim().slice(0, 200));
+    const requests = /(^|\.)archive\.org$/i.test(base.hostname)
+      ? [`${origin}/advancedsearch.php?q=${q}&fl[]=identifier,title,description,year&rows=10&page=1&output=json`]
+      : [
+          `${origin}/?s=${q}`,
+          `${origin}/search?q=${q}`,
+          `${origin}/search?query=${q}`
+        ];
+    const out = new Map();
+    const add = (item) => {
+      if (!item?.url || !/^https?:\/\//i.test(item.url)) return;
+      try {
+        const parsed = new URLParser(item.url);
+        if (parsed.hostname !== base.hostname && !parsed.hostname.endsWith('.' + base.hostname)) return;
+        parsed.hash = '';
+        const url = parsed.href;
+        const title = String(item.title || item.name || url).replace(/\s+/g, ' ').trim().slice(0, 240);
+        const score = titleSimilarity(query, `${title} ${url}`) + 0.2;
+        if (score < 0.08) return;
+        const key = url.toLowerCase();
+        if (!out.has(key) || score > out.get(key).score) out.set(key, {
+          name: title,
+          title,
+          url,
+          pageUrl: url,
+          score,
+          source: 'catalog-direct',
+          type: item.type || 'link',
+          year: item.year || null,
+          overview: item.overview || null,
+          candidateClass: 'watch'
+        });
+      } catch (e) {}
+    };
+    for (const endpoint of requests) {
+      try {
+        const { data } = await httpClient.get(endpoint, { timeout: Math.min(CATALOG_SEARCH_MS, 7000), maxContentLength: 1_500_000, responseType: 'text' });
+        if (/archive\.org\/advancedsearch\.php/i.test(endpoint)) {
+          const docs = typeof data === 'string' ? JSON.parse(data).response?.docs || [] : data?.response?.docs || [];
+          for (const doc of docs) {
+            if (!doc.identifier) continue;
+            add({ url: `${origin}/details/${encodeURIComponent(doc.identifier)}`, title: doc.title || doc.identifier, year: doc.year, overview: doc.description });
+          }
+        } else {
+          const $ = cheerio.load(String(data || ''));
+          $('a[href]').each((_, el) => {
+            const href = $(el).attr('href');
+            const text = $(el).text().trim();
+            if (!href || text.length < 2 || text.length > 300) return;
+            let url;
+            try { url = new URLParser(href, origin).href; } catch (e) { return; }
+            if (/^(javascript:|mailto:|tel:|#)/i.test(url) || /\.(css|js|png|jpe?g|gif|svg|ico|xml|rss)(?:[?#]|$)/i.test(url)) return;
+            add({ url, title: text });
+          });
+        }
+        if (out.size >= 10) break;
+      } catch (error) {
+        logger.debug?.({ source: source.name, endpoint, error: error.message }, 'Direct catalog search attempt failed');
+      }
+    }
+    return [...out.values()].sort((a, b) => b.score - a.score).slice(0, 10);
+  }
+
   async searchCatalogByName(query, category = '') {
     const sources = this.getCatalogSources(category);
     const collected = [];
@@ -2228,7 +2295,8 @@ class SearchProvider {
       const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
       const results = await Promise.all(batch.map(async (source) => {
         try {
-          const items = await this.searchByName(query, source.url, { catalogFast: true });
+          const direct = await this.searchSourceDirect(query, source);
+          const items = direct.length ? direct : await this.searchByName(query, source.url, { catalogFast: true });
           return items.map((item) => ({ ...item, sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category }));
         } catch (error) {
           logger.warn({ source: source.name, error: error.message }, 'Catalog source search failed');
