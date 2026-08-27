@@ -2245,10 +2245,13 @@ class SearchProvider {
         parsed.hash = '';
         const url = parsed.href;
         const title = String(item.title || item.name || url).replace(/\s+/g, ' ').trim().slice(0, 240);
+        if (/^(click here|enter|login|sign in|home|next|previous)$/i.test(title)) return;
         const exactTitle = titleSimilarity(query, title);
-        const identifierMatch = titleSimilarity(query, url.split('/').pop()?.replace(/[-_]+/g, ' ') || '');
-        const score = exactTitle >= 0.99 ? 1.25 : Math.max(exactTitle, identifierMatch) + 0.2;
-        if (score < 0.08) return;
+        const pathname = parsed.pathname.split('/').filter(Boolean).pop() || '';
+        const identifierMatch = titleSimilarity(query, pathname.replace(/[-_]+/g, ' '));
+        const contentMatch = Math.max(exactTitle, identifierMatch);
+        if (contentMatch < 0.12) return;
+        const score = exactTitle >= 0.99 ? 1.25 : contentMatch + 0.2;
         const key = url.toLowerCase();
         if (!out.has(key) || score > out.get(key).score) out.set(key, {
           name: title,
@@ -2296,8 +2299,15 @@ class SearchProvider {
     return [...out.values()].sort((a, b) => Number(b.exactTitle) - Number(a.exactTitle) || b.score - a.score).slice(0, 10);
   }
 
-  async searchCatalogByName(query, category = '') {
-    const sources = this.getCatalogSources(category);
+  async searchCatalogByName(query, category = '', site = '') {
+    const requested = this.normalizeSiteHint(site);
+    const sources = this.getCatalogSources(category).filter((source) => {
+      if (!requested.domain) return true;
+      try {
+        const host = new URLParser(source.url).hostname.toLowerCase();
+        return host === requested.domain || host.endsWith('.' + requested.domain);
+      } catch (e) { return false; }
+    });
     const collected = [];
     for (let offset = 0; offset < sources.length; offset += CATALOG_CONCURRENCY) {
       const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
@@ -2850,7 +2860,7 @@ async function processExtractionJob(job) {
       let catalogResults = [];
       if (job.data.category) {
         try {
-          catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
+          catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category, job.data.site), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
         } catch (catalogError) {
           logger.warn({ category: job.data.category, error: catalogError.message }, 'Catalog search budget exhausted; falling back to internet search');
         }
