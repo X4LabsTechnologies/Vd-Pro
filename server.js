@@ -2996,6 +2996,14 @@ async function shutdown() {
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+(async () => {
+  try {
+    const { getWidevineKeys } = await import('./src/widevine-remote.js');
+    console.log('✅ Widevine module loaded successfully');
+  } catch (error) {
+    console.error('❌ Widevine module error:', error.message);
+  }
+})();
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   logger.info('Vd-Pro v4.10.0 listening on :' + PORT);
