@@ -2249,6 +2249,43 @@ class SearchProvider {
     return { raw, domain, tokens };
   }
 
+  async resolveWatchPages(candidate, query = '') {
+    const original = String(candidate?.url || '').trim();
+    if (!/^https?:\/\//i.test(original)) return [];
+    const out = [{ url: original, pageUrl: original, resolution: 'search-result', score: 0 }];
+    try {
+      const base = new URLParser(original);
+      const { data } = await httpClient.get(original, {
+        timeout: Math.min(NAV_TIMEOUT_MS, 7000),
+        maxContentLength: 2_000_000,
+        responseType: 'text',
+        headers: { Accept: 'text/html,application/xhtml+xml', Referer: original }
+      });
+      const $ = cheerio.load(String(data || ''));
+      const seen = new Set([original]);
+      const add = (href, text, resolution) => {
+        try {
+          const parsed = new URLParser(href, original);
+          if (!/^https?:$/i.test(parsed.protocol) || parsed.hostname !== base.hostname) return;
+          parsed.hash = '';
+          const url = parsed.href;
+          if (seen.has(url)) return;
+          const descriptor = `${url} ${text || ''}`.toLowerCase();
+          if (this.isInfoCandidate(url, 'resolved-page', text) || this.isSourceLandingCandidate(url, text)) return;
+          const signal = /watch|play|player|embed|episode|season|stream|movie|film|series|video|فيلم|مسلسل|حلقة|مشاهدة/i.test(descriptor) ? 0.45 : 0;
+          const titleScore = titleSimilarity(query, text || url);
+          if (!signal && !this.isWorkOrWatchUrl(url)) return;
+          seen.add(url); out.push({ url, pageUrl: original, resolution, score: signal + titleScore });
+        } catch (e) {}
+      };
+      $('a[href]').each((_, el) => add($(el).attr('href'), $(el).text().trim(), 'internal-link'));
+      $('iframe[src], frame[src], video[src], source[src]').each((_, el) => add($(el).attr('src'), $(el).attr('title') || $(el).attr('name') || '', 'embedded-media'));
+    } catch (error) {
+      logger.debug({ url: original, error: error.message }, 'Candidate page probe failed');
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, 4);
+  }
+
   siteMatches(item = {}, siteInfo = {}) {
     if (!siteInfo.raw) return true;
     const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
@@ -3042,24 +3079,29 @@ async function processExtractionJob(job) {
       const candidateAttempts = [];
       let selected = null;
       for (const candidate of watchCandidates.slice(0, 3)) {
-        const remaining = Math.max(20000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - jobStartedAt) - 5000);
-        if (remaining < 12000 && candidateAttempts.length) break;
-        try {
-          const candidateResult = await withTimeout(
-            extractWithFallback(candidate.url, page, proxy, userId, {
-              quality: job.data.quality,
-              deep: job.data.deep
-            }),
-            Math.min(SEARCH_CANDIDATE_EXTRACT_MS, remaining),
-            'SEARCH_CANDIDATE_TIMEOUT'
-          );
-          const routed = applyMediaFlowProxy(candidateResult);
-          candidateAttempts.push({ url: candidate.url, name: candidate.name, success: !!routed?.success, errorCode: routed?.errorCode || null });
-          selected = { candidate, extraction: routed };
-          if (routed?.success) break;
-        } catch (error) {
-          candidateAttempts.push({ url: candidate.url, name: candidate.name, success: false, errorCode: error.code || 'SEARCH_CANDIDATE_ERROR' });
+        const resolvedPages = await searchProvider.resolveWatchPages(candidate, job.data.search);
+        for (const target of resolvedPages) {
+          const remaining = Math.max(20000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - jobStartedAt) - 5000);
+          if (candidateAttempts.length >= 3 || (remaining < 12000 && candidateAttempts.length)) break;
+          try {
+            const candidateResult = await withTimeout(
+              extractWithFallback(target.url, page, proxy, userId, {
+                quality: job.data.quality,
+                deep: job.data.deep,
+                pageUrl: target.pageUrl || candidate.url
+              }),
+              Math.min(SEARCH_CANDIDATE_EXTRACT_MS, remaining),
+              'SEARCH_CANDIDATE_TIMEOUT'
+            );
+            const routed = applyMediaFlowProxy(candidateResult);
+            candidateAttempts.push({ url: target.url, pageUrl: target.pageUrl || candidate.url, resolution: target.resolution, name: candidate.name, success: !!routed?.success, errorCode: routed?.errorCode || null });
+            selected = { candidate: { ...candidate, resolvedUrl: target.url, pageUrl: target.pageUrl || candidate.url }, extraction: routed };
+            if (routed?.success) break;
+          } catch (error) {
+            candidateAttempts.push({ url: target.url, pageUrl: target.pageUrl || candidate.url, resolution: target.resolution, name: candidate.name, success: false, errorCode: error.code || 'SEARCH_CANDIDATE_ERROR' });
+          }
         }
+        if (selected?.extraction?.success || candidateAttempts.length >= 3) break;
       }
       const chosen = selected || { candidate: watchCandidates[0], extraction: { success: false, errorCode: 'SEARCH_CANDIDATES_EXHAUSTED', error: 'Matching watch pages could not be extracted' } };
       return {
