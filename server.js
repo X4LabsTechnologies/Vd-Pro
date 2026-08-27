@@ -2830,8 +2830,13 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
     fallbackCtx = await browserPool.get(fallbackProxy);
     const cookies = await sessionManager.load(userId);
     const fallbackDeep = Boolean(options.deep || ['no-media-requests', 'timeout'].includes(primaryDiagnostics.failureClass) || Number(primaryDiagnostics.framesVisited || 0) < 2);
+    const pageContextHeaders = { referer: url };
+    try {
+      pageContextHeaders.origin = new URLParser(url).origin;
+      pageContextHeaders['user-agent'] = await fallbackCtx.page.evaluate(() => navigator.userAgent);
+    } catch (e) {}
     const fallback = await withTimeout(
-      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: fallbackDeep, quality: options.quality, cookies, headers: { referer: url } }),
+      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: fallbackDeep, quality: options.quality, cookies, headers: pageContextHeaders }),
       budget,
       'FALLBACK_EXTRACTION_TIMEOUT'
     );
