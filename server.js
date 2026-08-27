@@ -2366,6 +2366,13 @@ class SearchProvider {
     const siteInfo = this.normalizeSiteHint(site);
     const map = new Map();
     const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
+    const queryVariants = [...new Set([
+      q,
+      `${q} watch`,
+      `${q} video`,
+      `${q} play`,
+      `${q} مشاهدة`
+    ])].map((variant) => scoped + '"' + variant + '"');
     const watchQuery = scoped + '"' + q + '" watch stream episode movie series';
     const arabicWatchQuery = scoped + '"' + q + '" مشاهدة فيلم مسلسل حلقة';
     const runTier = async (tasks) => {
@@ -2377,10 +2384,10 @@ class SearchProvider {
     );
 
     if (options.catalogFast) {
-      await runTier([
-        this.searchDuckDuckGoHtml(watchQuery, map),
-        this.searchBing(watchQuery, map)
-      ]);
+      await runTier(queryVariants.flatMap((variant) => [
+        this.searchDuckDuckGoHtml(variant, map),
+        this.searchBing(variant, map)
+      ]));
       let fastResults = [...map.values()].filter((r) => this.siteMatches(r, siteInfo));
       fastResults.sort((a, b) => b.score - a.score);
       return fastResults.slice(0, 10).map((r, i) => ({
@@ -2401,16 +2408,20 @@ class SearchProvider {
       }));
     }
 
-    // Tier 1: low-cost broad discovery. Stop escalating when a matching watch page exists.
-    await runTier([
-      this.searchDuckDuckGoHtml(q, map),
-      this.searchBing(q, map),
-      this.searchDuckDuckGoAPI(q, map)
-    ]);
+    // Tier 1: multi-query broad discovery. Every variant is merged into the same de-duplicated map.
+    await runTier(queryVariants.flatMap((variant) => [
+      this.searchDuckDuckGoHtml(variant, map),
+      this.searchBing(variant, map),
+      this.searchDuckDuckGoAPI(variant, map)
+    ]));
 
     // Tier 2: watch-page intent and optional domain restriction.
     if (!hasStrongWatch()) {
       await runTier([
+        ...queryVariants.slice(1).flatMap((variant) => [
+          this.searchDuckDuckGoHtml(variant + ' watch', map),
+          this.searchBing(variant + ' watch', map)
+        ]),
         this.searchDuckDuckGoHtml(watchQuery, map),
         this.searchBing(watchQuery, map),
         this.searchDuckDuckGoHtml(arabicWatchQuery, map),
