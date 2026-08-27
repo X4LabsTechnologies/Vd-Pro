@@ -1,0 +1,3 @@
+[submodule "widevine-proxy"]
+	path = widevine-proxy
+	url = https://github.com/DevLARLEY/WidevineProxy2.git
