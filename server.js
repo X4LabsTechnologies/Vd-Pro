@@ -2376,6 +2376,9 @@ class SearchProvider {
 
   async searchCatalogByName(query, category = '', site = '') {
     const requested = this.normalizeSiteHint(site);
+    const identity = await this.resolveTitle(query);
+    const identityQuery = identity ? `${identity.title}${identity.year ? ` ${identity.year}` : ''}` : String(query || '');
+    const matchQueries = [String(query || ''), identityQuery].filter(Boolean);
     let sources = this.getCatalogSources(category).filter((source) => {
       if (!requested.domain) return true;
       try {
@@ -2385,20 +2388,19 @@ class SearchProvider {
     });
     if (!requested.domain) sources = sources.slice(0, SEARCH_CATALOG_MAX_SOURCES);
     const collected = [];
-    for (let offset = 0; offset < sources.length; offset += CATALOG_CONCURRENCY) {
-      const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
-      const results = await Promise.all(batch.map(async (source) => {
-        try {
-          const direct = await this.searchSourceDirect(query, source);
-          const items = direct.length ? direct : await this.searchByName(query, source.url, { catalogFast: true });
-          return items.map((item) => ({ ...item, sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category }));
-        } catch (error) {
-          logger.warn({ source: source.name, error: error.message }, 'Catalog source search failed');
-          return [];
-        }
-      }));
-      collected.push(...results.flat());
-      if (collected.some((item) => this.isWatchCandidate(item) && this.matchesRequestedTitle(query, item))) break;
+    // Deliberately sequential: one source gets a bounded probe before the next source starts.
+    for (const source of sources) {
+      try {
+        const direct = await withTimeout(this.searchSourceDirect(identityQuery, source), CATALOG_SOURCE_TIMEOUT_MS + 1500, 'CATALOG_SOURCE_TIMEOUT');
+        const items = direct.length
+          ? direct
+          : await withTimeout(this.searchByName(identityQuery, source.url, { catalogFast: true, identity }), CATALOG_SOURCE_TIMEOUT_MS + 2500, 'CATALOG_SEARCH_TIMEOUT');
+        const tagged = items.map((item) => ({ ...item, sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category, tmdbId: identity?.tmdbId || item.tmdbId || null, resolvedTitle: identity?.title || null, resolvedYear: identity?.year || null, resolvedType: identity?.type || null }));
+        collected.push(...tagged);
+        if (tagged.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)))) break;
+      } catch (error) {
+        logger.debug({ source: source.name, error: error.message }, 'Sequential catalog source probe failed');
+      }
     }
     const unique = new Map();
     for (const item of collected) {
@@ -2406,12 +2408,15 @@ class SearchProvider {
       try {
         const parsed = new URLParser(item.url);
         parsed.hash = '';
-        key = parsed.href;
+        key = parsed.href.toLowerCase();
       } catch (e) {}
       if (!key || unique.has(key)) continue;
       unique.set(key, item);
     }
-    return [...unique.values()].sort((a, b) => Number(b.score ?? b.matchScore ?? 0) - Number(a.score ?? a.matchScore ?? 0));
+    return [...unique.values()].sort((a, b) =>
+      Number(this.isWatchCandidate(b)) - Number(this.isWatchCandidate(a)) ||
+      Number(b.score ?? b.matchScore ?? 0) - Number(a.score ?? a.matchScore ?? 0)
+    );
   }
 
   async searchByName(query, site = '', options = {}) {
@@ -2419,7 +2424,7 @@ class SearchProvider {
     if (!q) return [];
     const siteInfo = this.normalizeSiteHint(site);
     const map = new Map();
-    const identity = await this.resolveTitle(q);
+    const identity = options.identity || await this.resolveTitle(q);
     const canonicalTitle = identity?.title || q;
     const identitySuffix = identity?.year ? ` ${identity.year}` : '';
     const typeSuffix = identity?.type === 'series' ? ' series tv' : identity?.type === 'movie' ? ' movie film' : '';
@@ -2969,7 +2974,7 @@ async function processExtractionJob(job) {
         }
       }
       const catalogHasStrongWatch = catalogResults.some((r) =>
-        searchProvider.isWatchCandidate(r) && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
+        searchProvider.isWatchCandidate(r) && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
       );
       const internetResults = !catalogHasStrongWatch
         ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
@@ -3004,7 +3009,7 @@ async function processExtractionJob(job) {
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
       const watchCandidates = results.filter(
-        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
+        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
       );
       if (!watchCandidates.length) {
         return {
