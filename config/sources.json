@@ -174,151 +174,176 @@
       "name": "VidSrc.pm",
       "url": "https://vidsrc.pm",
       "enabled": true,
-      "priority": 290
+      "priority": 290,
+      "tmdb": true
     },
     {
       "name": "MoviesAPI",
       "url": "https://moviesapi.to",
       "enabled": true,
-      "priority": 300
+      "priority": 300,
+      "tmdb": true
     },
     {
       "name": "VidSrc.to",
       "url": "https://vidsrc.to",
       "enabled": true,
-      "priority": 310
+      "priority": 310,
+      "tmdb": true
     },
     {
       "name": "VidCore",
       "url": "https://vidcore.org",
       "enabled": true,
-      "priority": 320
+      "priority": 320,
+      "tmdb": true
     },
     {
       "name": "AutoEmbed.co",
       "url": "https://autoembed.co",
       "enabled": true,
-      "priority": 330
+      "priority": 330,
+      "tmdb": true
     },
     {
       "name": "2Embed.cc",
       "url": "https://www.2embed.cc",
       "enabled": true,
-      "priority": 340
+      "priority": 340,
+      "tmdb": true
     },
     {
       "name": "VidLink.pro",
       "url": "https://vidlink.pro",
       "enabled": true,
-      "priority": 350
+      "priority": 350,
+      "tmdb": true
     },
     {
       "name": "VidSrc.top",
       "url": "https://vid-src.top",
       "enabled": true,
-      "priority": 360
+      "priority": 360,
+      "tmdb": true
     },
     {
       "name": "VidSrc.me",
       "url": "https://vidsrc.me",
       "enabled": true,
-      "priority": 370
+      "priority": 370,
+      "tmdb": true
     },
     {
       "name": "VsEmbed.ru",
       "url": "https://vsembed.ru",
       "enabled": true,
-      "priority": 380
+      "priority": 380,
+      "tmdb": true
     },
     {
       "name": "VidSpark.to",
       "url": "https://vidspark.to",
       "enabled": true,
-      "priority": 390
+      "priority": 390,
+      "tmdb": true
     },
     {
       "name": "VidSrc.in",
       "url": "https://vidsrc.in",
       "enabled": true,
-      "priority": 400
+      "priority": 400,
+      "tmdb": true
     },
     {
       "name": "1Embed.cc",
       "url": "https://1embed.cc",
       "enabled": true,
-      "priority": 410
+      "priority": 410,
+      "tmdb": true
     },
     {
       "name": "SmashyStream",
       "url": "https://player.smashystream.com",
       "enabled": true,
-      "priority": 420
+      "priority": 420,
+      "tmdb": true
     },
     {
       "name": "Vidzee",
       "url": "https://player.vidzee.wtf",
       "enabled": true,
-      "priority": 430
+      "priority": 430,
+      "tmdb": true
     },
     {
       "name": "Videasy",
       "url": "https://player.videasy.to",
       "enabled": true,
-      "priority": 440
+      "priority": 440,
+      "tmdb": true
     },
     {
       "name": "VidNest",
       "url": "https://vidnest.fun",
       "enabled": true,
-      "priority": 450
+      "priority": 450,
+      "tmdb": true
     },
     {
       "name": "VidKing",
       "url": "https://www.vidking.net",
       "enabled": true,
-      "priority": 460
+      "priority": 460,
+      "tmdb": true
     },
     {
       "name": "VidRock",
       "url": "https://vidrock.net",
       "enabled": true,
-      "priority": 470
+      "priority": 470,
+      "tmdb": true
     },
     {
       "name": "PrimeSrc",
       "url": "https://primesrc.me",
       "enabled": true,
-      "priority": 480
+      "priority": 480,
+      "tmdb": true
     },
     {
       "name": "CineSrc",
       "url": "https://cinesrc.st",
       "enabled": true,
-      "priority": 490
+      "priority": 490,
+      "tmdb": true
     },
     {
       "name": "Peachify",
       "url": "https://peachify.pro",
       "enabled": true,
-      "priority": 500
+      "priority": 500,
+      "tmdb": true
     },
     {
       "name": "FilmU",
       "url": "https://embed.filmu.in",
       "enabled": true,
-      "priority": 510
+      "priority": 510,
+      "tmdb": true
     },
     {
       "name": "VidZen",
       "url": "https://vidzen.fun",
       "enabled": true,
-      "priority": 520
+      "priority": 520,
+      "tmdb": true
     },
     {
       "name": "111Movies",
       "url": "https://111movies.net",
       "enabled": true,
-      "priority": 530
+      "priority": 530,
+      "tmdb": true
     }
   ],
   "anime": [

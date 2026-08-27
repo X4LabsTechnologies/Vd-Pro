@@ -78,6 +78,8 @@ const HARD_EXTRACT_MS = envMs('HARD_EXTRACT_MS', 110000, 10000, 15 * 60 * 1000);
 const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
 const CATALOG_SEARCH_MS = envMs('CATALOG_SEARCH_MS', 18000, 5000, 2 * 60 * 1000);
 const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000, 15000);
+const SEARCH_CATALOG_MAX_SOURCES = envMs('SEARCH_CATALOG_MAX_SOURCES', 18, 4, 80);
+const SEARCH_CANDIDATE_EXTRACT_MS = envMs('SEARCH_CANDIDATE_EXTRACT_MS', 30000, 15000, 90000);
 const SEARCH_QUERY_CONCURRENCY = envMs('SEARCH_QUERY_CONCURRENCY', 4, 1, 8);
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
   const [name, urls] = entry.split('=').map((part) => part?.trim());
@@ -2281,7 +2283,7 @@ class SearchProvider {
       const aliases = SOURCE_DOMAIN_ALIAS_MAP.get(String(source.name || '').toLowerCase()) || [];
       return [source, ...aliases.map((url, index) => ({ ...source, url, priority: Number(source.priority || 999) + (index + 1) / 1000, aliasOf: source.url }))];
     });
-    return expanded.sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999));
+    return expanded.sort((a, b) => Number(Boolean(b.tmdb)) - Number(Boolean(a.tmdb)) || Number(a.priority || 999) - Number(b.priority || 999));
   }
 
   async searchSourceDirect(query, source) {
@@ -2374,13 +2376,14 @@ class SearchProvider {
 
   async searchCatalogByName(query, category = '', site = '') {
     const requested = this.normalizeSiteHint(site);
-    const sources = this.getCatalogSources(category).filter((source) => {
+    let sources = this.getCatalogSources(category).filter((source) => {
       if (!requested.domain) return true;
       try {
         const hosts = [source.url, source.aliasOf].filter(Boolean).map((url) => new URLParser(url).hostname.toLowerCase().replace(/^www\./, ''));
         return hosts.some((host) => host === requested.domain || host.endsWith('.' + requested.domain));
       } catch (e) { return false; }
     });
+    if (!requested.domain) sources = sources.slice(0, SEARCH_CATALOG_MAX_SOURCES);
     const collected = [];
     for (let offset = 0; offset < sources.length; offset += CATALOG_CONCURRENCY) {
       const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
@@ -3025,7 +3028,7 @@ async function processExtractionJob(job) {
               quality: job.data.quality,
               deep: job.data.deep
             }),
-            Math.min(HARD_EXTRACT_MS + 30000, remaining),
+            Math.min(SEARCH_CANDIDATE_EXTRACT_MS, remaining),
             'SEARCH_CANDIDATE_TIMEOUT'
           );
           const routed = applyMediaFlowProxy(candidateResult);
