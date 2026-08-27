@@ -81,6 +81,7 @@ const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000,
 const SEARCH_CATALOG_MAX_SOURCES = envMs('SEARCH_CATALOG_MAX_SOURCES', 18, 4, 80);
 const SEARCH_CANDIDATE_EXTRACT_MS = envMs('SEARCH_CANDIDATE_EXTRACT_MS', 30000, 15000, 90000);
 const SEARCH_QUERY_CONCURRENCY = envMs('SEARCH_QUERY_CONCURRENCY', 4, 1, 8);
+const ENABLE_CATALOG_SEARCH = /^(1|true|yes|on)$/i.test(String(process.env.ENABLE_CATALOG_SEARCH || 'false'));
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
   const [name, urls] = entry.split('=').map((part) => part?.trim());
   return name && urls ? [name.toLowerCase(), urls.split('|').map((url) => url.trim()).filter(Boolean)] : null;
@@ -1933,11 +1934,11 @@ class SearchProvider {
       (item.boost || 0);
     const descriptor = url + ' ' + (item.title || '') + ' ' + (item.name || '');
     const d = descriptor.toLowerCase();
-    const watchBoost = /watch|stream|online|episode|season|movie|series|film|play|embed|player|video/.test(d)
+    const watchBoost = /watch|stream|online|episode|season|movie|series|film|play|embed|player|video|youtube|vimeo|مشاهدة|فيديو|حلقة/.test(d)
       ? 0.15
       : 0;
     const informationPenalty =
-      /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram|login|signin|sign-in|signup|sign-up|account|myapps|auth|oauth|sso|admin|dashboard|portal/.test(d) ? 0.35 : 0;
+      /wikipedia|imdb|themoviedb|rottentomatoes|fandom|news|review|trailer|facebook|instagram|login|signin|sign-in|signup|sign-up|account|myapps|auth|oauth|sso|admin|dashboard|portal|apk|trending|popular|homepage/.test(d) ? 0.35 : 0;
     const score = Math.max(0, rawScore + watchBoost - informationPenalty);
     const candidateClass = infoCandidate ? 'info' : 'watch';
     const prev = map.get(url);
@@ -2438,10 +2439,11 @@ class SearchProvider {
     const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
     const queryVariants = [...new Set(titleForms.flatMap((term) => [
       `${term}${identitySuffix}${typeSuffix}`,
-      `${term}${identitySuffix}${typeSuffix} watch`,
       `${term}${identitySuffix}${typeSuffix} video`,
+      `${term}${identitySuffix}${typeSuffix} watch`,
       `${term}${identitySuffix}${typeSuffix} play`,
-      `${term}${identitySuffix}${typeSuffix} مشاهدة`
+      `${term}${identitySuffix}${typeSuffix} مشاهدة`,
+      `${term}${identitySuffix}${typeSuffix} فيديو`
     ]))].map((variant) => scoped + '"' + variant + '"');
     const watchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' watch stream episode movie series';
     const arabicWatchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' مشاهدة فيلم مسلسل حلقة';
@@ -2972,7 +2974,7 @@ async function processExtractionJob(job) {
     if (job.data.type === 'search_extract') {
       const searchProvider = new SearchProvider();
       let catalogResults = [];
-      if (job.data.category) {
+      if (ENABLE_CATALOG_SEARCH && job.data.category) {
         try {
           catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category, job.data.site), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
         } catch (catalogError) {
