@@ -2386,6 +2386,12 @@ class SearchProvider {
         return hosts.some((host) => host === requested.domain || host.endsWith('.' + requested.domain));
       } catch (e) { return false; }
     });
+    // For movies/series, the user-provided TMDB-capable catalog is authoritative.
+    // Do not silently broaden to Netflix/Prime/Disney or unrelated catalog entries.
+    if (!requested.domain && String(category || '').trim().toLowerCase() === 'movies_series') {
+      const tmdbSources = sources.filter((source) => source.tmdb === true);
+      if (tmdbSources.length) sources = tmdbSources;
+    }
     if (!requested.domain) sources = sources.slice(0, SEARCH_CATALOG_MAX_SOURCES);
     const collected = [];
     // Deliberately sequential: one source gets a bounded probe before the next source starts.
@@ -2976,7 +2982,8 @@ async function processExtractionJob(job) {
       const catalogHasStrongWatch = catalogResults.some((r) =>
         searchProvider.isWatchCandidate(r) && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
       );
-      const internetResults = !catalogHasStrongWatch
+      const movieCatalogOnly = String(job.data.category || '').trim().toLowerCase() === 'movies_series' && !String(job.data.site || '').trim();
+      const internetResults = !catalogHasStrongWatch && !movieCatalogOnly
         ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
         : [];
       // Merge every provider/catalog result before classification. A URL can be
