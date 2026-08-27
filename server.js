@@ -2826,17 +2826,17 @@ async function extractWithFallback(url, page, proxy, userId, options = {}) {
   try {
     const remaining = Math.max(5000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - startedAt) - 5000);
     const budget = Math.min(FALLBACK_BUDGET_MS, remaining);
-    const fallbackProxy = PROXIES.length ? proxyManager.getNext() : null;
-    fallbackCtx = await browserPool.get(fallbackProxy);
+    const fallbackProxy = proxy || null;
+    const fallbackPage = page || (fallbackCtx = await browserPool.get(fallbackProxy)).page;
     const cookies = await sessionManager.load(userId);
     const fallbackDeep = Boolean(options.deep || ['no-media-requests', 'timeout'].includes(primaryDiagnostics.failureClass) || Number(primaryDiagnostics.framesVisited || 0) < 2);
     const pageContextHeaders = { referer: url };
     try {
       pageContextHeaders.origin = new URLParser(url).origin;
-      pageContextHeaders['user-agent'] = await fallbackCtx.page.evaluate(() => navigator.userAgent);
+      pageContextHeaders['user-agent'] = await fallbackPage.evaluate(() => navigator.userAgent);
     } catch (e) {}
     const fallback = await withTimeout(
-      runFallbackExtraction({ page: fallbackCtx.page, pageUrl: url, deep: fallbackDeep, quality: options.quality, cookies, headers: pageContextHeaders }),
+      runFallbackExtraction({ page: fallbackPage, pageUrl: url, deep: fallbackDeep, quality: options.quality, cookies, headers: pageContextHeaders }),
       budget,
       'FALLBACK_EXTRACTION_TIMEOUT'
     );
