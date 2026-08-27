@@ -2239,9 +2239,12 @@ class SearchProvider {
     const abortTimer = setTimeout(() => controller.abort(), CATALOG_SOURCE_TIMEOUT_MS);
     const origin = base.origin;
     const q = encodeURIComponent(String(query || '').trim().slice(0, 200));
-    const requests = /(^|\.)archive\.org$/i.test(base.hostname)
+    let requests = /(^|\.)archive\.org$/i.test(base.hostname)
       ? [`${origin}/advancedsearch.php?q=${q}&fl[]=identifier,title,description,year&rows=10&page=1&output=json`]
       : [
+          `${origin}/robots.txt`,
+          `${origin}/sitemap.xml`,
+          `${origin}/sitemap_index.xml`,
           `${origin}/?s=${q}`,
           `${origin}/search?q=${q}`,
           `${origin}/search?query=${q}`
@@ -2287,6 +2290,15 @@ class SearchProvider {
           for (const doc of docs) {
             if (!doc.identifier) continue;
             add({ url: `${origin}/details/${encodeURIComponent(doc.identifier)}`, title: doc.title || doc.identifier, year: doc.year, overview: doc.description });
+          }
+        } else if (/\/robots\.txt(?:[?#]|$)/i.test(endpoint)) {
+          const sitemapUrls = String(data || '').split(/\r?\n/).map((line) => line.match(/^\s*sitemap\s*:\s*(https?:\/\/\S+)/i)?.[1]).filter(Boolean).slice(0, 5);
+          requests.push(...sitemapUrls.filter((url) => !requests.includes(url)));
+        } else if (/sitemap(?:_index)?\.xml(?:[?#]|$)/i.test(endpoint)) {
+          const xml = String(data || '');
+          const locs = [...xml.matchAll(/<loc[^>]*>\s*([^<]+?)\s*<\/loc>/gi)].map((match) => match[1].trim()).filter(Boolean).slice(0, 500);
+          for (const loc of locs) {
+            try { add({ url: new URLParser(loc).href, title: decodeURIComponent(new URLParser(loc).pathname.split('/').filter(Boolean).pop() || '').replace(/[-_]+/g, ' ') }); } catch (e) {}
           }
         } else {
           const $ = cheerio.load(String(data || ''));
