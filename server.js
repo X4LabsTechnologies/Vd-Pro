@@ -1925,6 +1925,13 @@ class SearchProvider {
     );
   }
 
+  isExcludedPlatform(url = '') {
+    try {
+      const host = new URLParser(String(url)).hostname.toLowerCase().replace(/^www\./, '');
+      return ['netflix.com', 'primevideo.com', 'amazon.com', 'disneyplus.com', 'hulu.com', 'max.com', 'hbomax.com', 'paramountplus.com', 'peacocktv.com', 'apple.com'].some((domain) => host === domain || host.endsWith('.' + domain));
+    } catch (e) { return false; }
+  }
+
   add(map, item) {
     const url = item.url;
     if (!url || !/^https?:\/\//i.test(url)) return;
@@ -2522,6 +2529,7 @@ class SearchProvider {
     }
 
     let results = [...map.values()].sort((a, b) => b.score - a.score);
+    if (options.excludePlatforms) results = results.filter((r) => !this.isExcludedPlatform(r.url));
     if (siteInfo.raw) results = results.filter((r) => this.siteMatches(r, siteInfo));
     const strong = results.filter((r) => r.score >= 0.12);
     if (strong.length >= 2) results = strong;
@@ -2783,7 +2791,7 @@ app.get('/api/v1/extract', verifyToken, async (req, res) => {
 
 app.get('/api/v1/search', verifyToken, async (req, res) => {
   try {
-      const { q, site = '', category = '', extract, quality = 'auto', deep } = req.query;
+      const { q, site = '', category = '', extract, quality = 'auto', deep, excludePlatforms } = req.query;
     if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
     if (String(q).length > 300) return res.status(400).json({ success: false, error: 'q too long', code: 'QUERY_TOO_LONG' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
@@ -2797,7 +2805,8 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
           category: String(category || '').trim(),
           userId,
           quality,
-          deep: deep === '1' || deep === 'true'
+          deep: deep === '1' || deep === 'true',
+          excludePlatforms: excludePlatforms === '1' || excludePlatforms === 'true'
         },
         { timeout: doExtract ? HARD_EXTRACT_MS + 30000 : HARD_SEARCH_MS + 10000, attempts: 2 }
       ),
@@ -2953,7 +2962,7 @@ async function processExtractionJob(job, signal) {
 
     if (job.data.type === 'search') {
       const results = await withTimeout(
-        new SearchProvider().searchByName(job.data.search, job.data.site, { signal }),
+        new SearchProvider().searchByName(job.data.search, job.data.site, { signal, excludePlatforms: job.data.excludePlatforms }),
         HARD_SEARCH_MS,
         'SEARCH_TIMEOUT'
       );
