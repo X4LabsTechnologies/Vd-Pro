@@ -2092,6 +2092,27 @@ class SearchProvider {
     } catch (e) {}
   }
 
+  async resolveTitle(query) {
+    if (!TMDB_API_KEY) return null;
+    try {
+      const { data } = await httpClient.get('https://api.themoviedb.org/3/search/multi', {
+        params: { api_key: TMDB_API_KEY, query: String(query || '').trim(), include_adult: false, language: 'en-US', page: 1 },
+        timeout: 10000
+      });
+      const item = (data?.results || []).find((entry) => entry.media_type === 'movie' || entry.media_type === 'tv');
+      if (!item) return null;
+      return {
+        title: item.title || item.name || String(query || '').trim(),
+        year: String(item.release_date || item.first_air_date || '').slice(0, 4) || null,
+        type: item.media_type === 'tv' ? 'series' : 'movie',
+        tmdbId: item.id
+      };
+    } catch (e) {
+      logger.debug({ error: e.message }, 'TMDB title resolution failed');
+      return null;
+    }
+  }
+
   async searchTMDB(query, map) {
     if (!TMDB_API_KEY) return;
     try {
@@ -2155,11 +2176,40 @@ class SearchProvider {
     }
   }
 
+  isSourceLandingCandidate(url = '', title = '') {
+    try {
+      const parsed = new URLParser(String(url));
+      const path = parsed.pathname.toLowerCase().replace(/\/+$/, '');
+      const text = `${path} ${String(title || '')}`.toLowerCase();
+      if (!path || path === '/' || /^\/(home|index|main|trending|popular|latest|search|category|categories|tag|tags|apk|app|about|contact|privacy|terms)(?:\/|$)/i.test(path)) return true;
+      if (/apkpure|\.apk(?:[?#]|$)|download-app|application|android-app/.test(text)) return true;
+      if (/\/(trending|popular|latest|home|index|search)(?:[\/?#]|$)/i.test(path)) return true;
+      return false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  isWorkOrWatchUrl(url = '') {
+    try {
+      const parsed = new URLParser(String(url));
+      const path = parsed.pathname.toLowerCase();
+      if (!path || path === '/') return false;
+      if (/\/(watch|watching|watch-online|episode|episodes|season|seasons|movie|movies|film|films|series|show|play|embed|player|video|مسلسل|مسلسلات|فيلم|افلام|حلقة|حلقات)(?:[\/\-_]|$)/i.test(path)) return true;
+      const segments = path.split('/').filter(Boolean);
+      return segments.length >= 2 && segments[segments.length - 1].length >= 5;
+    } catch (e) {
+      return false;
+    }
+  }
+
   isWatchCandidate(item = {}) {
     const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
-    if (item.source === 'catalog-direct' && item.candidateClass === 'watch') return true;
     if (this.isInfoCandidate(item.url, item.source, item.title || item.name)) return false;
-    return /watch|stream|online|episode|season|movie|movies|series|film|play|embed|player|video|\/movies?\//i.test(descriptor);
+    if (this.isSourceLandingCandidate(item.url, item.title || item.name)) return false;
+    if (item.source === 'catalog-direct' && item.candidateClass === 'watch') return this.isWorkOrWatchUrl(item.url);
+    if (!this.isWorkOrWatchUrl(item.url)) return false;
+    return /watch|stream|online|episode|season|movie|movies|series|film|play|embed|player|video|\/movies?\/|\/films?\/|مسلسل|فيلم|حلقة|مشاهدة/i.test(descriptor);
   }
 
   matchesRequestedTitle(query = '', item = {}) {
@@ -2366,16 +2416,21 @@ class SearchProvider {
     if (!q) return [];
     const siteInfo = this.normalizeSiteHint(site);
     const map = new Map();
+    const identity = await this.resolveTitle(q);
+    const canonicalTitle = identity?.title || q;
+    const identitySuffix = identity?.year ? ` ${identity.year}` : '';
+    const typeSuffix = identity?.type === 'series' ? ' series tv' : identity?.type === 'movie' ? ' movie film' : '';
+    const titleForms = [...new Set([q, canonicalTitle])];
     const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
-    const queryVariants = [...new Set([
-      q,
-      `${q} watch`,
-      `${q} video`,
-      `${q} play`,
-      `${q} مشاهدة`
-    ])].map((variant) => scoped + '"' + variant + '"');
-    const watchQuery = scoped + '"' + q + '" watch stream episode movie series';
-    const arabicWatchQuery = scoped + '"' + q + '" مشاهدة فيلم مسلسل حلقة';
+    const queryVariants = [...new Set(titleForms.flatMap((term) => [
+      `${term}${identitySuffix}${typeSuffix}`,
+      `${term}${identitySuffix}${typeSuffix} watch`,
+      `${term}${identitySuffix}${typeSuffix} video`,
+      `${term}${identitySuffix}${typeSuffix} play`,
+      `${term}${identitySuffix}${typeSuffix} مشاهدة`
+    ]))].map((variant) => scoped + '"' + variant + '"');
+    const watchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' watch stream episode movie series';
+    const arabicWatchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' مشاهدة فيلم مسلسل حلقة';
     const runTier = async (tasks) => {
       for (let offset = 0; offset < tasks.length; offset += SEARCH_QUERY_CONCURRENCY) {
         const batch = tasks.slice(offset, offset + SEARCH_QUERY_CONCURRENCY);
@@ -2911,7 +2966,7 @@ async function processExtractionJob(job) {
         }
       }
       const catalogHasStrongWatch = catalogResults.some((r) =>
-        searchProvider.isWatchCandidate(r) && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12
+        searchProvider.isWatchCandidate(r) && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
       );
       const internetResults = !catalogHasStrongWatch
         ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
@@ -2946,7 +3001,7 @@ async function processExtractionJob(job) {
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
       const watchCandidates = results.filter(
-        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12
+        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && searchProvider.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
       );
       if (!watchCandidates.length) {
         return {
