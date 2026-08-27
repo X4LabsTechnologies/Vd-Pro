@@ -77,6 +77,7 @@ function sleep(ms) {
 const HARD_EXTRACT_MS = envMs('HARD_EXTRACT_MS', 110000, 10000, 15 * 60 * 1000);
 const HARD_SEARCH_MS = envMs('HARD_SEARCH_MS', 30000, 5000, 10 * 60 * 1000);
 const CATALOG_SEARCH_MS = envMs('CATALOG_SEARCH_MS', 18000, 5000, 2 * 60 * 1000);
+const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000, 15000);
 const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
 const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
@@ -2224,6 +2225,8 @@ class SearchProvider {
 
   async searchSourceDirect(query, source) {
     const base = new URLParser(source.url);
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), CATALOG_SOURCE_TIMEOUT_MS);
     const origin = base.origin;
     const q = encodeURIComponent(String(query || '').trim().slice(0, 200));
     const requests = /(^|\.)archive\.org$/i.test(base.hostname)
@@ -2242,7 +2245,9 @@ class SearchProvider {
         parsed.hash = '';
         const url = parsed.href;
         const title = String(item.title || item.name || url).replace(/\s+/g, ' ').trim().slice(0, 240);
-        const score = titleSimilarity(query, `${title} ${url}`) + 0.2;
+        const exactTitle = titleSimilarity(query, title);
+        const identifierMatch = titleSimilarity(query, url.split('/').pop()?.replace(/[-_]+/g, ' ') || '');
+        const score = exactTitle >= 0.99 ? 1.25 : Math.max(exactTitle, identifierMatch) + 0.2;
         if (score < 0.08) return;
         const key = url.toLowerCase();
         if (!out.has(key) || score > out.get(key).score) out.set(key, {
@@ -2252,6 +2257,7 @@ class SearchProvider {
           pageUrl: url,
           score,
           matchScore: Math.round(score * 1000) / 1000,
+          exactTitle: exactTitle >= 0.99,
           source: 'catalog-direct',
           type: item.type || 'link',
           year: item.year || null,
@@ -2262,7 +2268,7 @@ class SearchProvider {
     };
     for (const endpoint of requests) {
       try {
-        const { data } = await httpClient.get(endpoint, { timeout: Math.min(CATALOG_SEARCH_MS, 7000), maxContentLength: 1_500_000, responseType: 'text' });
+        const { data } = await httpClient.get(endpoint, { signal: controller.signal, timeout: Math.min(CATALOG_SOURCE_TIMEOUT_MS, 7000), maxContentLength: 1_500_000, responseType: 'text' });
         if (/archive\.org\/advancedsearch\.php/i.test(endpoint)) {
           const docs = typeof data === 'string' ? JSON.parse(data).response?.docs || [] : data?.response?.docs || [];
           for (const doc of docs) {
@@ -2286,7 +2292,8 @@ class SearchProvider {
         logger.debug?.({ source: source.name, endpoint, error: error.message }, 'Direct catalog search attempt failed');
       }
     }
-    return [...out.values()].sort((a, b) => b.score - a.score).slice(0, 10);
+    clearTimeout(abortTimer);
+    return [...out.values()].sort((a, b) => Number(b.exactTitle) - Number(a.exactTitle) || b.score - a.score).slice(0, 10);
   }
 
   async searchCatalogByName(query, category = '') {
