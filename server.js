@@ -38,6 +38,7 @@ import swaggerUi from 'swagger-ui-express';
 import { runFallbackExtraction } from './src/fallback-extractor.js';
 import { applyMediaFlowProxy, isMediaFlowProxyConfigured } from './src/mediaflow-proxy.js';
 import { getWidevineKeys } from './src/widevine-remote.js';
+import { bypassCloudflare } from './src/widevine-remote.js';
 
 config();
 
