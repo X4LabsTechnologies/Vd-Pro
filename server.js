@@ -1022,6 +1022,42 @@ async function activateLazyIframes(page) {
   }
 }
 
+async function preparePlayerInteraction(page, deep = false) {
+  const diagnostics = { playerSurfaceFound: false, playerHovered: false, playerScrolls: 0, readyFrames: 0 };
+  const selectors = [
+    'video', 'audio', '[class*="player" i]', '[id*="player" i]', '[class*="video" i]',
+    'iframe[src*="player" i]', 'iframe[src*="embed" i]', '.jwplayer', '.plyr', '.video-js'
+  ];
+  try {
+    await page.waitForLoadState('domcontentloaded', { timeout: Math.min(8000, NAV_TIMEOUT_MS) }).catch(() => {});
+    await page.evaluate(() => {
+      window.scrollTo(0, Math.max(0, Math.floor(document.body.scrollHeight * 0.22)));
+    }).catch(() => {});
+    diagnostics.playerScrolls++;
+    await sleep(deep ? 900 : 500);
+    for (const frame of page.frames().slice(0, deep ? 14 : 8)) {
+      for (const selector of selectors) {
+        try {
+          const el = await frame.$(selector);
+          if (!el) continue;
+          const box = await el.boundingBox().catch(() => null);
+          if (!box || box.width < 20 || box.height < 20) continue;
+          diagnostics.playerSurfaceFound = true;
+          await el.scrollIntoViewIfNeeded({ timeout: 800 }).catch(() => {});
+          await el.hover({ timeout: 800 }).then(() => { diagnostics.playerHovered = true; }).catch(() => {});
+          diagnostics.readyFrames++;
+          break;
+        } catch (e) {}
+      }
+    }
+    await activateLazyIframes(page);
+    await sleep(deep ? 900 : 500);
+  } catch (e) {
+    diagnostics.interactionWarning = e.code || e.message || 'PLAYER_INTERACTION_FAILED';
+  }
+  return diagnostics;
+}
+
 function mediaResponsePredicate(res) {
   try {
     const u = res.url();
@@ -1552,14 +1588,15 @@ class VideoExtractor {
         });
       } catch (e) {}
 
-      diagnostics.lazyIframes = await activateLazyIframes(page);
+            diagnostics.lazyIframes = await activateLazyIframes(page);
+      diagnostics.playerInteraction = await preparePlayerInteraction(page, deep);
       await sleep(deep ? 800 : 400);
-
-      // Interaction round 1
+      // Interaction round 1: visible player surface first, then bounded play/server controls.
       diagnostics.playClicked = await tryClickPlay(page);
       diagnostics.html5Play = await forceHtml5Play(page);
       diagnostics.tabsClicked = await tryClickPlayerTabs(page);
       if (diagnostics.tabsClicked) {
+        await preparePlayerInteraction(page, deep);
         await tryClickPlay(page);
         await forceHtml5Play(page);
       }
