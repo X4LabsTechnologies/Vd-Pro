@@ -1513,6 +1513,30 @@ class VideoExtractor {
         const blob = (result.pageTitle || '') + ' ' + snippet;
         if (/captcha|cloudflare|verify you are human|attention required|cf-challenge/i.test(blob)) {
           diagnostics.captchaSuspected = true;
+          // Keep Playwright as the primary path; use the existing chaser-cf integration
+          // only as a bounded recovery attempt, then continue with the same page context.
+          try {
+            const cf = await bypassCloudflare(pageUrl, proxy);
+            if (cf?.success) {
+              diagnostics.chaserCfUsed = true;
+              if (Array.isArray(cf.cookies) && cf.cookies.length) {
+                await page.context().addCookies(cf.cookies).catch(() => {});
+                diagnostics.chaserCfCookies = cf.cookies.length;
+              }
+              if (cf.headers && typeof cf.headers === 'object') {
+                const safeHeaders = Object.fromEntries(Object.entries(cf.headers).filter(([k]) => !/cookie|authorization/i.test(k)));
+                if (Object.keys(safeHeaders).length) await page.setExtraHTTPHeaders(safeHeaders).catch(() => {});
+                diagnostics.chaserCfHeaders = Object.keys(safeHeaders);
+              }
+              if (cf.html && String(cf.html).length > 200) {
+                await page.setContent(String(cf.html), { waitUntil: 'domcontentloaded', timeout: Math.min(10000, NAV_TIMEOUT_MS) }).catch(() => {});
+                diagnostics.chaserCfHtmlApplied = true;
+              }
+              await sleep(deep ? 1200 : 700);
+            }
+          } catch (cfError) {
+            diagnostics.chaserCfError = cfError.code || cfError.message || 'CHASER_CF_FAILED';
+          }
         }
         if (/widevine|fairplay|playready|drm|encrypted media/i.test(blob)) {
           diagnostics.drmSuspected = true;
