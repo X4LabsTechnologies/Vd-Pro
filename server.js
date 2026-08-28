@@ -283,7 +283,7 @@ function extractUrlCandidates(value = '', base = '') {
 }
 
 function isRejectedMediaUrl(url = '') {
-  return /doubleclick\.net|googlesyndication\.com|google-analytics\.com|googletagmanager\.com|facebook\.com\/tr|hotjar|clarity\.ms|scorecardresearch|analytics|tracking|tracker|pixel|beacon|adservice|adsystem|advert|banner|\/ads?(?:\/|\?|$)/i.test(
+  return /doubleclick\.net|googlesyndication\.com|google-analytics\.com|googletagmanager\.com|facebook\.com\/tr|hotjar|clarity\.ms|scorecardresearch|analytics|tracking|tracker|pixel|beacon|adservice|adsystem|advert|banner|cloudflare\.com\/static\/|hero[-_]?background|background[-_]?video|\/static\/(?:media|video|assets?)\/|\/ads?(?:\/|\?|$)/i.test(
     String(url || '')
   );
 }
