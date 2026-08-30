@@ -2,7 +2,7 @@ import { URL as URLParser } from 'url';
 
 const MEDIA_RE = /\.(?:m3u8|mpd|mp4|m4v|webm)(?:[?#]|$)|\/manifest(?:[/?]|$)|\/playlist(?:[/?]|$)|\/stream(?:[/?]|$)/i;
 const SUB_RE = /\.(?:vtt|srt|ass|ssa|ttml)(?:[?#]|$)|\/subs?(?:[/?]|$)|subtitle|caption/i;
-const JUNK_RE = /doubleclick|googlesyndication|google-analytics|googletagmanager|tracking|tracker|pixel|beacon|advert|banner|preroll|midroll|postroll|sample\.mp4|dummy\.mp4|blank\.mp4/i;
+const JUNK_RE = /doubleclick|googlesyndication|google-analytics|googletagmanager|facebook\.com\/tr|hotjar|clarity\.ms|tracking|tracker|pixel|beacon|advert|banner|preroll|midroll|postroll|sample\.mp4|dummy\.mp4|blank\.mp4|placeholder|adservice|adsystem|\/ads?(?:\/|\?|$)|preview[-_]?clip|teaser/i;
 
 function resolveUrl(base, value) {
   if (!value) return null;
@@ -158,7 +158,7 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
     await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     await activateLazyIframes();
     for (let round = 0; round < (deep ? 3 : 2); round++) {
-      for (const frame of page.frames().slice(0, deep ? 20 : 10)) {
+      for (const frame of page.frames().slice(0, deep ? 24 : 12)) {
         diagnostics.framesVisited = Math.max(diagnostics.framesVisited, page.frames().length);
         try { collect(await frame.content(), frame.url() || pageUrl, found); } catch {}
         try {
@@ -170,7 +170,7 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
       await activateLazyIframes();
       await interact();
       await page.evaluate(() => { window.scrollBy(0, 500); document.querySelectorAll('video').forEach((v) => { try { v.muted = true; void v.play(); } catch {} }); }).catch(() => {});
-      await new Promise((r) => setTimeout(r, deep ? 2500 : 1200));
+      await new Promise((r) => setTimeout(r, deep ? 3200 : 1600));
     }
     for (const u of [...found.values()]) {
       if (!/\.m3u8(?:[?#]|$)|\.mpd(?:[?#]|$)|manifest|playlist/i.test(u)) continue;
@@ -184,13 +184,13 @@ export async function runFallbackExtraction({ page, pageUrl, deep = false, quali
   } finally { page.off('request', onReq); page.off('response', onRes); page.off('frameattached', onFrameAttached); page.off('framenavigated', onFrameNavigated); }
   const candidates = [...found.values()].map((url) => ({ url, quality: quality(url), bandwidth: 0, type: /\.m3u8|manifest|playlist/i.test(url) ? 'hls' : /\.mpd/i.test(url) ? 'dash' : /\.webm/i.test(url) ? 'webm' : 'mp4', referer: referers.get(key(url)) || pageUrl }));
   const variants = [];
-  const toValidate = candidates.slice(0, 16);
+  const toValidate = candidates.slice(0, 24);
   const validateCandidate = async (v) => {
     let validation = { valid: false, status: null, contentType: null, reason: 'not-checked' };
     try {
       const requestHeaders = { ...headers, referer: v.referer || pageUrl };
       if (v.type === 'mp4' || v.type === 'webm') requestHeaders.range = 'bytes=0-2047';
-      const res = await page.context().request.get(v.url, { timeout: 5000, failOnStatusCode: false, maxRedirects: 5, headers: requestHeaders });
+      const res = await page.context().request.get(v.url, { timeout: 7000, failOnStatusCode: false, maxRedirects: 5, headers: requestHeaders });
       const responseHeaders = res.headers();
       const ct = String(responseHeaders['content-type'] || '').toLowerCase();
       const body = (v.type === 'hls' || v.type === 'dash' || v.type === 'mp4' || v.type === 'webm') ? await res.body().then((b) => b.subarray(0, 4096)).catch(() => Buffer.alloc(0)) : Buffer.alloc(0);
