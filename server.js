@@ -1168,11 +1168,21 @@ class ResultValidator {
   static async validateWithPage(url, page, referer = null) {
     if (!page?.context || page.context().__vdClosed) return { valid: false, reason: 'NO_PAGE_CONTEXT' };
     try {
+      let userAgent = '';
+      try { userAgent = await page.evaluate(() => navigator.userAgent); } catch (e) {}
+      let origin = '';
+      try { if (referer) origin = new URLParser(referer).origin; } catch (e) {}
       const response = await page.context().request.get(url, {
         timeout: 7000,
         failOnStatusCode: false,
         maxRedirects: 4,
-        headers: { Accept: 'video/mp4,application/vnd.apple.mpegurl,application/dash+xml,*/*', Range: 'bytes=0-16383', ...(referer ? { Referer: referer } : {}) }
+        headers: {
+          Accept: 'video/mp4,application/vnd.apple.mpegurl,application/dash+xml,*/*',
+          Range: 'bytes=0-16383',
+          ...(userAgent ? { 'User-Agent': userAgent } : {}),
+          ...(referer ? { Referer: referer } : {}),
+          ...(origin ? { Origin: origin } : {})
+        }
       });
       const headers = response.headers() || {};
       const contentType = headers['content-type'] || '';
@@ -2544,15 +2554,22 @@ class SearchProvider {
     const typeSuffix = identity?.type === 'series' ? ' series tv' : identity?.type === 'movie' ? ' movie film' : '';
     const titleForms = [...new Set([q, canonicalTitle])];
     const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
-    const queryVariants = [...new Set(titleForms.flatMap((term) => [
-      `${term}${identitySuffix}${typeSuffix}`,
-      `${term}${identitySuffix}${typeSuffix} watch`,
-      `${term}${identitySuffix}${typeSuffix} video`,
-      `${term}${identitySuffix}${typeSuffix} play`,
-      `${term}${identitySuffix}${typeSuffix} مشاهدة`
-    ]))].map((variant) => scoped + '"' + variant + '"');
-    const watchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' watch stream episode movie series';
-    const arabicWatchQuery = scoped + '"' + canonicalTitle + identitySuffix + '"' + typeSuffix + ' مشاهدة فيلم مسلسل حلقة';
+    // Quote only the resolved title. Quoting the complete title+year+type+intent
+    // string makes engines reject valid pages when one token is absent from a title.
+    const queryVariants = [...new Set(titleForms.flatMap((term) => {
+      const quoted = '"' + String(term).replace(/"/g, ' ') + '"';
+      return [
+        `${scoped}${quoted}${identitySuffix}${typeSuffix}`,
+        `${scoped}${quoted}${identitySuffix}${typeSuffix} watch`,
+        `${scoped}${quoted}${identitySuffix}${typeSuffix} video`,
+        `${scoped}${quoted}${identitySuffix}${typeSuffix} play`,
+        `${scoped}${quoted}${identitySuffix}${typeSuffix} مشاهدة`,
+        `${scoped}${quoted}${identitySuffix}${typeSuffix} فيديو`
+      ];
+    }))];
+    const quotedCanonical = '"' + String(canonicalTitle).replace(/"/g, ' ') + '"';
+    const watchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`;
+    const arabicWatchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة`;
     const runTier = async (tasks) => {
       for (let offset = 0; offset < tasks.length; offset += SEARCH_QUERY_CONCURRENCY) {
         const batch = tasks.slice(offset, offset + SEARCH_QUERY_CONCURRENCY);
