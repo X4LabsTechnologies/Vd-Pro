@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.10.0 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.10.1 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -411,22 +411,25 @@ function rankScore(url, extra = {}) {
   const u = String(url || '').toLowerCase();
   let s = 0;
   // Prefer adaptive streams over random progressive files
-  if (u.includes('.m3u8')) s += 70;
-  if (u.includes('.mpd')) s += 62;
-  if (u.includes('.mp4')) s += 40;
-  if (/master|playlist|index\.m3u8/i.test(u)) s += 12;
-  if (/2160|4k/.test(u)) s += 30;
-  if (/1080|1920/.test(u)) s += 22;
-  if (/720/.test(u)) s += 14;
+  if (u.includes('.m3u8')) s += 80;
+  if (u.includes('.mpd')) s += 72;
+  if (u.includes('.mp4')) s += 42;
+  if (u.includes('.webm')) s += 30;
+  if (/master|playlist|index\.m3u8/i.test(u)) s += 18;
+  if (/2160|4k/.test(u)) s += 34;
+  if (/1080|1920/.test(u)) s += 26;
+  if (/720/.test(u)) s += 16;
   if (/480|360/.test(u)) s += 4;
-  if (extra.bandwidth) s += Math.min(12, Math.floor(Number(extra.bandwidth) / 2_000_000));
-  if (extra.validated) s += 20;
-  if (extra.contentLength && extra.contentLength > 1_000_000) s += 10;
-  if (extra.drmSuspected) s -= 60;
-  if (isJunkMediaUrl(u)) s -= 200;
-  if (/preview|trailer|thumb|poster|sample/.test(u)) s -= 25;
-  if (isMediaSegment(u)) s -= 40;
-  if (u.startsWith('blob:')) s -= 50;
+  if (extra.bandwidth) s += Math.min(16, Math.floor(Number(extra.bandwidth) / 1_500_000));
+  if (extra.validated) s += 28;
+  if (extra.contentLength && extra.contentLength > 1_000_000) s += 12;
+  if (extra.contentLength && extra.contentLength > 20_000_000) s += 8;
+  if (extra.drmSuspected) s -= 70;
+  if (isJunkMediaUrl(u)) s -= 250;
+  if (/preview|trailer|thumb|poster|sample|teaser/.test(u)) s -= 30;
+  if (isMediaSegment(u)) s -= 50;
+  if (u.startsWith('blob:')) s -= 60;
+  if (/\/(ads?|promo|banner)\//i.test(u)) s -= 40;
   return s;
 }
 
@@ -450,17 +453,34 @@ function pickByQuality(variants, quality = 'auto') {
 }
 
 function titleSimilarity(a, b) {
-  const na = String(a || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-  const nb = String(b || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const normalize = (value) =>
+    String(value || '')
+      .toLowerCase()
+      .normalize('NFKC')
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/ة/g, 'ه')
+      .replace(/ى/g, 'ي')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const na = normalize(a);
+  const nb = normalize(b);
   if (!na || !nb) return 0;
   if (na === nb) return 1;
-  if (na.includes(nb) || nb.includes(na)) return 0.9;
-  const wa = new Set(na.split(' ').filter((w) => w.length > 1));
-  const wb = new Set(nb.split(' ').filter((w) => w.length > 1));
-  if (!wa.size || !wb.size) return 0;
+  if (na.includes(nb) || nb.includes(na)) return 0.92;
+  const stop = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'to', 'for', 'with', 'from', 'watch', 'online', 'full', 'hd', 'movie', 'series', 'film', 'episode', 'مترجم', 'فيلم', 'مسلسل', 'مشاهدة']);
+  const wa = na.split(' ').filter((w) => w.length > 1 && !stop.has(w));
+  const wb = nb.split(' ').filter((w) => w.length > 1 && !stop.has(w));
+  if (!wa.length || !wb.length) return 0;
+  const setA = new Set(wa);
+  const setB = new Set(wb);
   let inter = 0;
-  for (const w of wa) if (wb.has(w)) inter++;
-  return inter / Math.max(wa.size, wb.size);
+  for (const w of setA) if (setB.has(w)) inter++;
+  const union = new Set([...setA, ...setB]).size;
+  const jaccard = inter / Math.max(1, union);
+  const coverage = inter / Math.max(setA.size, setB.size);
+  return Math.max(jaccard, coverage * 0.95);
 }
 
 const httpClient = axios.create({
@@ -1567,7 +1587,7 @@ class VideoExtractor {
           // Keep Playwright as the primary path; use the existing chaser-cf integration
           // only as a bounded recovery attempt, then continue with the same page context.
           try {
-            const cf = await bypassCloudflare(pageUrl, proxy);
+            const cf = await bypassCloudflare(pageUrl, options.proxy || null);
             if (cf?.success) {
               diagnostics.chaserCfUsed = true;
               if (Array.isArray(cf.cookies) && cf.cookies.length) {
@@ -1603,7 +1623,7 @@ class VideoExtractor {
         });
       } catch (e) {}
 
-            diagnostics.lazyIframes = await activateLazyIframes(page);
+      diagnostics.lazyIframes = await activateLazyIframes(page);
       diagnostics.playerInteraction = await preparePlayerInteraction(page, deep);
       await sleep(deep ? 800 : 400);
       // Interaction round 1: visible player surface first, then bounded play/server controls.
@@ -2291,7 +2311,16 @@ class SearchProvider {
   }
 
   matchesRequestedTitle(query = '', item = {}) {
-    const normalize = (value) => String(value || '').toLowerCase().normalize('NFKC').replace(/[\u064B-\u065F\u0670]/g, '').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '')
+      .toLowerCase()
+      .normalize('NFKC')
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/ة/g, 'ه')
+      .replace(/ى/g, 'ي')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     const tokens = normalize(query).split(' ').filter((token) => token.length > 1 && !SearchProvider.TITLE_STOPWORDS.has(token));
     if (!tokens.length) return false;
     const descriptor = normalize(`${item.url || ''} ${item.title || ''} ${item.name || ''}`);
@@ -2299,7 +2328,10 @@ class SearchProvider {
     const numeric = tokens.filter((token) => /^\d{4}$|^s\d+$|^e\d+$/i.test(token));
     const numericHits = numeric.filter((token) => descriptor.includes(token));
     if (numeric.length && numericHits.length !== numeric.length) return false;
-    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.6 : 1);
+    // Prefer strong titleSimilarity in addition to token coverage
+    const sim = titleSimilarity(query, `${item.title || ''} ${item.name || ''}`);
+    if (sim >= 0.85 && hits.length >= Math.max(1, Math.ceil(tokens.length * 0.5))) return true;
+    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.55 : tokens.length === 2 ? 0.9 : 1);
   }
 
   normalizeSiteHint(site = '') {
@@ -2830,7 +2862,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.10.0',
+    version: '4.10.1',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -2986,7 +3018,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.1' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -3388,23 +3420,14 @@ async function shutdown() {
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-(async () => {
-  try {
-    const { getWidevineKeys } = await import('./src/widevine-remote.js');
-    console.log('✅ Widevine module loaded successfully');
-  } catch (error) {
-    console.error('❌ Widevine module error:', error.message);
-  }
-})();
-
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.10.0 listening on :' + PORT);
-  console.log('VD-PRO v4.10.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.10.1 listening on :' + PORT);
+  console.log('VD-PRO v4.10.1 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.10.0 starting...');
+    logger.info('Vd-Pro v4.10.1 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
