@@ -13,7 +13,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY server.js ./
 COPY config ./config
 COPY src ./src
-COPY README.md ./.env.example ./
+COPY README.md ./
 
 RUN useradd --create-home --shell /bin/bash vdpro \
     && chown -R vdpro:vdpro /app
