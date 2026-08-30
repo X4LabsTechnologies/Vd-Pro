@@ -2318,7 +2318,9 @@ class SearchProvider {
         return name === normalizedName || name.replace(/\s+/g, '') === normalizedName.replace(/\s+/g, '');
       });
       if (catalogSource?.url) {
-        try { domain = new URLParser(catalogSource.url).hostname.toLowerCase().replace(/^www\./, ''); } catch (e) {}
+        const sourceName = String(catalogSource.name || '').toLowerCase();
+        const preferred = SOURCE_DOMAIN_ALIAS_MAP.get(sourceName)?.[0] || catalogSource.url;
+        try { domain = new URLParser(preferred).hostname.toLowerCase().replace(/^www\./, ''); } catch (e) {}
       }
     }
     const tokens = raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').split(/\s+/).filter((x) => x.length > 1 && !['www','com','net','org','live','tv'].includes(x));
@@ -3105,11 +3107,12 @@ async function processExtractionJob(job) {
     if (job.data.type === 'search_extract') {
       const searchProvider = new SearchProvider();
       let catalogResults = [];
-      if (job.data.category) {
+      const catalogCategory = job.data.category || (job.data.site ? 'movies_series' : '');
+      if (catalogCategory) {
         try {
-          catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, job.data.category, job.data.site), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
+          catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, catalogCategory, job.data.site), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
         } catch (catalogError) {
-          logger.warn({ category: job.data.category, error: catalogError.message }, 'Catalog search budget exhausted; falling back to internet search');
+          logger.warn({ category: catalogCategory, site: job.data.site, error: catalogError.message }, 'Catalog search budget exhausted; falling back to internet search');
         }
       }
       const catalogHasStrongWatch = catalogResults.some((r) =>
