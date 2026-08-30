@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.10.1 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.10.2 — Extraction engine upgrade (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -91,8 +91,8 @@ const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').sp
   return name && urls ? [name.toLowerCase(), urls.split('|').map((url) => url.trim()).filter(Boolean)] : null;
 }).filter(Boolean);
 const SOURCE_DOMAIN_ALIAS_MAP = new Map([...DEFAULT_SOURCE_DOMAIN_ALIASES, ...SOURCE_DOMAIN_ALIASES]);
-const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
-const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
+const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 55000, 5000, 5 * 60 * 1000);
+const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 12000, 1000, 45000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
 const FALLBACK_BUDGET_MS = envMs('FALLBACK_BUDGET_MS', 30000, 5000, 90000);
 const JOB_PROCESS_TIMEOUT_DEFAULT_MS = Math.max(HARD_EXTRACT_MS + FALLBACK_BUDGET_MS + 15000, HARD_SEARCH_MS + 15000);
@@ -692,16 +692,57 @@ const PAGE_HOOK_SCRIPT = `
       };
     }
   } catch(e){}
+  try {
+    var desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+    if (desc && desc.set) {
+      Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+        configurable: true,
+        enumerable: true,
+        get: desc.get,
+        set: function(v) {
+          try { push(String(v), 'media-src'); } catch(e){}
+          return desc.set.call(this, v);
+        }
+      });
+    }
+  } catch(e){}
+  try {
+    var osrc = HTMLMediaElement.prototype.setAttribute;
+    HTMLMediaElement.prototype.setAttribute = function(name, value) {
+      try {
+        if (String(name).toLowerCase() === 'src') push(String(value), 'media-attr');
+      } catch(e){}
+      return osrc.apply(this, arguments);
+    };
+  } catch(e){}
 })();
 `;
 
 class StealthGenerator {
   static script() {
     return `(function(){
-Object.defineProperty(navigator,'webdriver',{get:function(){return false}});
-try{delete navigator.__proto__.webdriver}catch(e){}
-Object.defineProperty(navigator,'languages',{get:function(){return ['en-US','en','ar']}});
-window.chrome=window.chrome||{runtime:{},app:{}};
+try { Object.defineProperty(navigator,'webdriver',{get:function(){return false}}); } catch(e){}
+try { delete navigator.__proto__.webdriver; } catch(e){}
+try {
+  Object.defineProperty(navigator,'languages',{get:function(){return ['en-US','en','ar']}});
+  Object.defineProperty(navigator,'language',{get:function(){return 'en-US'}});
+} catch(e){}
+try { Object.defineProperty(navigator,'plugins',{get:function(){return [1,2,3,4,5]}}); } catch(e){}
+try { Object.defineProperty(navigator,'platform',{get:function(){return 'Win32'}}); } catch(e){}
+try { Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return 8}}); } catch(e){}
+try { Object.defineProperty(navigator,'deviceMemory',{get:function(){return 8}}); } catch(e){}
+try { window.chrome = window.chrome || { runtime:{}, app:{ isInstalled:false }, csi:function(){}, loadTimes:function(){} }; } catch(e){}
+try {
+  var q = window.navigator.permissions && window.navigator.permissions.query;
+  if (q) {
+    window.navigator.permissions.query = function(parameters){
+      if (parameters && parameters.name === 'notifications') {
+        return Promise.resolve({ state: Notification.permission });
+      }
+      return q.apply(this, arguments);
+    };
+  }
+} catch(e){}
 })();`;
   }
 }
@@ -801,10 +842,19 @@ class BrowserContextPool {
       ignoreHTTPSErrors: true,
       viewport: { width: 1366, height: 768 },
       locale: 'en-US',
+      timezoneId: 'Asia/Riyadh',
+      colorScheme: 'dark',
       serviceWorkers: 'block',
+      javaScriptEnabled: true,
+      hasTouch: false,
+      isMobile: false,
       userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8' }
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8,ar-SA;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Upgrade-Insecure-Requests': '1'
+      }
     };
     if (proxy?.url) opts.proxy = { server: proxy.url };
     const context = await this.browser.newContext(opts);
@@ -916,31 +966,61 @@ let browserPool = null;
 async function tryClickPlay(page) {
   const selectors = [
     'button[aria-label*="Play" i]',
+    'button[aria-label*="تشغيل" i]',
+    'button[aria-label*="مشاهدة" i]',
     '[title*="Play" i]',
+    '[title*="تشغيل" i]',
     '[data-testid*="play" i]',
     '.vjs-big-play-button',
     '.plyr__control--overlaid',
     '.jw-icon-display',
     '.jw-display-icon-container',
+    '.ytp-large-play-button',
     'button.play',
     '[class*="play-button" i]',
     '[class*="playbtn" i]',
     '[class*="btn-play" i]',
+    '[class*="big-play" i]',
+    '[class*="play-icon" i]',
     'div[class*="play"][role="button"]',
+    '[role="button"][class*="play" i]',
+    'button[class*="play" i]',
+    '.mejs__overlay-play',
+    '.fp-play',
     'video'
   ];
   let clicked = false;
-  for (const frame of page.frames().slice(0, 12)) {
+  for (const frame of page.frames().slice(0, 16)) {
     for (const sel of selectors) {
       try {
         const els = await frame.$$(sel);
-        for (const el of els.slice(0, 3)) {
-          await el.click({ timeout: 700 }).catch(() => {});
-          clicked = true;
+        for (const el of els.slice(0, 4)) {
+          try {
+            const box = await el.boundingBox().catch(() => null);
+            if (box && (box.width < 8 || box.height < 8)) continue;
+            await el.scrollIntoViewIfNeeded({ timeout: 600 }).catch(() => {});
+            await el.click({ timeout: 900, force: true }).catch(() => {});
+            clicked = true;
+          } catch (e) {}
         }
       } catch (e) {}
     }
   }
+  try {
+    const textClicked = await page.evaluate(() => {
+      let c = 0;
+      const re = /^(?:▶|►)?\s*(?:play|watch|start|تشغيل|مشاهدة|تشغيل الفيديو|ابدأ)\s*(?:▶|►)?$/i;
+      for (const el of document.querySelectorAll('button, a, div[role="button"], span[role="button"]')) {
+        if (c >= 6) break;
+        const t = (el.innerText || el.textContent || '').trim();
+        if (t && t.length < 28 && re.test(t)) {
+          try { el.click(); c++; } catch (e) {}
+        }
+      }
+      return c;
+    });
+    if (textClicked) clicked = true;
+  } catch (e) {}
   return clicked;
 }
 
@@ -948,9 +1028,22 @@ async function forceHtml5Play(page) {
   try {
     return await page.evaluate(() => {
       let n = 0;
-      document.querySelectorAll('video').forEach((v) => {
+      const videos = [];
+      const collect = (root) => {
+        if (!root || !root.querySelectorAll) return;
+        root.querySelectorAll('video').forEach((v) => videos.push(v));
+        root.querySelectorAll('*').forEach((el) => {
+          if (el.shadowRoot) collect(el.shadowRoot);
+        });
+      };
+      collect(document);
+      videos.forEach((v) => {
         try {
           v.muted = true;
+          v.playsInline = true;
+          if (typeof v.load === 'function' && !v.currentSrc && !v.src) {
+            try { v.load(); } catch (e) {}
+          }
           const p = v.play();
           if (p && p.catch) p.catch(() => {});
           n++;
@@ -970,55 +1063,65 @@ async function tryClickPlayerTabs(page) {
     '[class*="servers" i] a',
     '[class*="servers" i] li',
     '[class*="servers" i] span',
+    '[class*="servers" i] div',
     '[class*="quality" i] button',
     '[class*="source" i] a',
+    '[class*="source" i] button',
     '[class*="player" i] a[href*="http"]',
+    '[class*="embed" i] a',
+    '[class*="embed" i] button',
     'a[href*="server"]',
+    'a[href*="embed"]',
     'button[data-server]',
     'button[data-embed]',
     '[data-embed]',
     '[data-link]',
     '[data-url*="http"]',
+    '[data-src*="http"]',
     '.watching a',
     '.episode-server a',
     '#watch a',
     '#player-option a',
     '.player-options a',
     '.nav-pills a',
-    '[role="tab"]'
+    '.nav-tabs a',
+    '[role="tab"]',
+    '.change-server a',
+    '.change-server button',
+    '#servers a',
+    '#servers button',
+    '.servers-list a',
+    '.servers-list li'
   ];
   let n = 0;
-  for (const frame of page.frames().slice(0, 8)) {
+  for (const frame of page.frames().slice(0, 12)) {
     for (const sel of tabSelectors) {
       try {
         const els = await frame.$$(sel);
-        for (const el of els.slice(0, 5)) {
+        for (const el of els.slice(0, 6)) {
           try {
             const box = await el.boundingBox();
             if (box && box.width > 0 && box.height > 0) {
-              await el.click({ timeout: 600 }).catch(() => {});
+              await el.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => {});
+              await el.click({ timeout: 700, force: true }).catch(() => {});
               n++;
-              await sleep(350).catch(() => {});
+              await sleep(280).catch(() => {});
             }
           } catch (e) {}
         }
       } catch (e) {}
     }
   }
-  // Text-match generic watch/play labels (Latin + common Arabic UI words)
   try {
     n += await page.evaluate(() => {
       let c = 0;
-      const re = /watch|play|server|source|load|stream|مشاهدة|تشغيل|سيرفر|الجودة|تحميل/i;
+      const re = /watch|play|server|source|load|stream|embed|vip|hd|مشاهدة|تشغيل|سيرفر|الجودة|تحميل|مباشر|الحلقة|الموسم/i;
       const nodes = document.querySelectorAll('a, button, li, span, div[role="button"]');
       for (const el of nodes) {
-        if (c >= 8) break;
+        if (c >= 12) break;
         const t = (el.innerText || el.textContent || '').trim();
-        if (t.length > 0 && t.length < 40 && re.test(t)) {
-          try {
-            el.click();
-            c++;
-          } catch (e) {}
+        if (t.length > 0 && t.length < 48 && re.test(t)) {
+          try { el.click(); c++; } catch (e) {}
         }
       }
       return c;
@@ -1039,6 +1142,36 @@ async function activateLazyIframes(page) {
             n++;
           } catch (e) {}
         }
+      });
+      return n;
+    });
+  } catch (e) {
+    return 0;
+  }
+}
+
+async function dismissOverlays(page) {
+  try {
+    return await page.evaluate(() => {
+      let n = 0;
+      const re = /accept|agree|consent|got it|ok|close|dismiss|allow|موافقة|موافق|قبول|إغلاق|اغلاق|حسنا|حسناً|تم/i;
+      const nodes = document.querySelectorAll('button, a, [role="button"], .close, .modal-close, [aria-label*="close" i], [class*="cookie" i] button, [class*="consent" i] button');
+      for (const el of nodes) {
+        if (n >= 6) break;
+        const t = ((el.innerText || el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
+        if (t && t.length < 40 && re.test(t)) {
+          try { el.click(); n++; } catch (e) {}
+        }
+      }
+      document.querySelectorAll('[class*="overlay" i], [class*="modal" i], [class*="popup" i], [id*="cookie" i]').forEach((el) => {
+        try {
+          const style = window.getComputedStyle(el);
+          if (style && style.position === 'fixed' && (el.innerText || '').length < 500) {
+            el.style.pointerEvents = 'none';
+            el.style.opacity = '0';
+            n++;
+          }
+        } catch (e) {}
       });
       return n;
     });
@@ -1623,19 +1756,20 @@ class VideoExtractor {
         });
       } catch (e) {}
 
+      diagnostics.overlaysDismissed = await dismissOverlays(page);
       diagnostics.lazyIframes = await activateLazyIframes(page);
-      diagnostics.playerInteraction = await preparePlayerInteraction(page, deep);
-      await sleep(deep ? 800 : 400);
+      diagnostics.playerInteraction = await preparePlayerInteraction(page, true);
+      await sleep(deep ? 900 : 600);
       // Interaction round 1: visible player surface first, then bounded play/server controls.
       diagnostics.playClicked = await tryClickPlay(page);
       diagnostics.html5Play = await forceHtml5Play(page);
       diagnostics.tabsClicked = await tryClickPlayerTabs(page);
-      if (diagnostics.tabsClicked) {
-        await preparePlayerInteraction(page, deep);
-        await tryClickPlay(page);
-        await forceHtml5Play(page);
-      }
-      await sleep(deep ? 4200 : 2200);
+      // Always run a second light interaction (medium sites need it without proxy)
+      await preparePlayerInteraction(page, deep);
+      await dismissOverlays(page);
+      await tryClickPlay(page);
+      await forceHtml5Play(page);
+      await sleep(deep ? 4200 : 2800);
       diagnostics.strategies.push('network');
 
       await harvestDomAndHooks('r1');
@@ -1645,19 +1779,28 @@ class VideoExtractor {
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
         await forceHtml5Play(page);
-        await sleep(deep ? 6500 : 3200);
+        await activateLazyIframes(page);
+        await sleep(deep ? 6500 : 4200);
         await harvestDomAndHooks('r2');
       }
 
-      // Adaptive deep pass: delayed players may expose media only after a second interaction.
-      if (!deep && diagnostics.mediaRequests > 0 && !hasPlayable()) {
+      // Adaptive deep pass without requiring deep=1 (stronger default for medium-strong sites)
+      if (!deep && !hasPlayable() && (diagnostics.mediaRequests > 0 || diagnostics.tabsClicked > 0 || diagnostics.playClicked || diagnostics.lazyIframes > 0 || diagnostics.framesAttached > 0)) {
         diagnostics.adaptiveDeep = true;
+        diagnostics.strategies.push('adaptive-deep');
+        await dismissOverlays(page);
         await activateLazyIframes(page);
         diagnostics.tabsClicked = (diagnostics.tabsClicked || 0) + (await tryClickPlayerTabs(page));
         diagnostics.playClicked = (await tryClickPlay(page)) || diagnostics.playClicked;
         await forceHtml5Play(page);
-        await sleep(3000);
+        await sleep(4500);
         await harvestDomAndHooks('adaptive-deep');
+        if (!hasPlayable()) {
+          await tryClickPlay(page);
+          await forceHtml5Play(page);
+          await sleep(2500);
+          await harvestDomAndHooks('adaptive-deep-r2');
+        }
       }
 
       // Embed / iframe probe
@@ -2862,7 +3005,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.10.1',
+    version: '4.10.2',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -3018,7 +3161,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.1' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.2' } })
 );
 
 function classifyExtractionFailure(result, primaryError = null) {
@@ -3421,13 +3564,13 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.10.1 listening on :' + PORT);
-  console.log('VD-PRO v4.10.1 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.10.2 listening on :' + PORT);
+  console.log('VD-PRO v4.10.2 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.10.1 starting...');
+    logger.info('Vd-Pro v4.10.2 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
