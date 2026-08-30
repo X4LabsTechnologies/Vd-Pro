@@ -81,11 +81,16 @@ const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000,
 const SEARCH_CATALOG_MAX_SOURCES = envMs('SEARCH_CATALOG_MAX_SOURCES', 18, 4, 80);
 const SEARCH_CANDIDATE_EXTRACT_MS = envMs('SEARCH_CANDIDATE_EXTRACT_MS', 30000, 15000, 90000);
 const SEARCH_QUERY_CONCURRENCY = envMs('SEARCH_QUERY_CONCURRENCY', 4, 1, 8);
+const DEFAULT_SOURCE_DOMAIN_ALIASES = [
+  ['fasel hd', ['https://fasselhd.com', 'https://faselhd.live']],
+  ['faselhd', ['https://fasselhd.com', 'https://faselhd.live']],
+  ['egybest', ['https://egybests.live', 'https://egybest.si']]
+];
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
   const [name, urls] = entry.split('=').map((part) => part?.trim());
   return name && urls ? [name.toLowerCase(), urls.split('|').map((url) => url.trim()).filter(Boolean)] : null;
 }).filter(Boolean);
-const SOURCE_DOMAIN_ALIAS_MAP = new Map(SOURCE_DOMAIN_ALIASES);
+const SOURCE_DOMAIN_ALIAS_MAP = new Map([...DEFAULT_SOURCE_DOMAIN_ALIASES, ...SOURCE_DOMAIN_ALIASES]);
 const NAV_TIMEOUT_MS = envMs('NAV_TIMEOUT_MS', 45000, 5000, 5 * 60 * 1000);
 const MEDIA_IDLE_WAIT_MS = envMs('MEDIA_IDLE_WAIT_MS', 8000, 1000, 30000);
 const JOB_LOCK_MS = HARD_EXTRACT_MS + 45000;
@@ -2418,7 +2423,10 @@ class SearchProvider {
           `${origin}/sitemap_index.xml`,
           `${origin}/?s=${q}`,
           `${origin}/search?q=${q}`,
-          `${origin}/search?query=${q}`
+          `${origin}/search?query=${q}`,
+          `${origin}/page/movies/?s=${q}`,
+          `${origin}/page/series/?s=${q}`,
+          `${origin}/page/anime/?s=${q}`
         ];
     const out = new Map();
     const add = (item) => {
