@@ -83,8 +83,8 @@ const SEARCH_CATALOG_MAX_SOURCES = envMs('SEARCH_CATALOG_MAX_SOURCES', 18, 4, 80
 const SEARCH_CANDIDATE_EXTRACT_MS = envMs('SEARCH_CANDIDATE_EXTRACT_MS', 30000, 15000, 90000);
 const SEARCH_QUERY_CONCURRENCY = envMs('SEARCH_QUERY_CONCURRENCY', 4, 1, 8);
 const DEFAULT_SOURCE_DOMAIN_ALIASES = [
-  ['fasel hd', ['https://fasselhd.com', 'https://faselhd.live']],
-  ['faselhd', ['https://fasselhd.com', 'https://faselhd.live']],
+  ['fasel hd', ['https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live']],
+  ['faselhd', ['https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live']],
   ['egybest', ['https://egybests.live', 'https://egybest.si']]
 ];
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
