@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.10.2 — Extraction engine upgrade (same public API)
+ * Vd-Pro v4.10.3 — Search & extraction hardening (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -82,6 +82,10 @@ const CATALOG_SOURCE_TIMEOUT_MS = envMs('CATALOG_SOURCE_TIMEOUT_MS', 3500, 1000,
 const SEARCH_CATALOG_MAX_SOURCES = envMs('SEARCH_CATALOG_MAX_SOURCES', 18, 4, 80);
 const SEARCH_CANDIDATE_EXTRACT_MS = envMs('SEARCH_CANDIDATE_EXTRACT_MS', 30000, 15000, 90000);
 const SEARCH_QUERY_CONCURRENCY = envMs('SEARCH_QUERY_CONCURRENCY', 4, 1, 8);
+const SEARCH_CACHE_TTL_MS = envMs('SEARCH_CACHE_TTL_MS', 300000, 15000, 3600000);
+const SEARCH_MAX_ALIASES = envMs('SEARCH_MAX_ALIASES', 5, 1, 10);
+const SEARCH_MAX_VARIANTS = envMs('SEARCH_MAX_VARIANTS', 18, 4, 36);
+const CDP_NETWORK_CAPTURE = String(process.env.CDP_NETWORK_CAPTURE || 'true').toLowerCase() !== 'false';
 const DEFAULT_SOURCE_DOMAIN_ALIASES = [
   ['fasel hd', ['https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live']],
   ['faselhd', ['https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live']],
@@ -1619,6 +1623,46 @@ class VideoExtractor {
     page.on('frameattached', onFrameAttached);
     page.on('framenavigated', onFrameNavigated);
     page.context().on('page', onContextPage);
+    // Low-level Chromium Network observer. This supplements Playwright request/response
+    // events and only records public network metadata; it never decrypts media or handles DRM keys.
+    let cdp = null;
+    let cdpRequestUrls = 0;
+    try {
+      if (CDP_NETWORK_CAPTURE) {
+        cdp = await page.context().newCDPSession(page);
+        await cdp.send('Network.enable', { maxTotalBufferSize: 8 * 1024 * 1024, maxResourceBufferSize: 2 * 1024 * 1024 });
+        cdp.on('Network.requestWillBeSent', (event) => {
+          try {
+            cdpRequestUrls++;
+            const u = event?.request?.url;
+            if (!u) return;
+            const ct = event?.request?.headers?.['Content-Type'] || event?.request?.headers?.['content-type'] || '';
+            if (looksLikeMedia(u, ct) || looksLikeSubtitle(u, ct)) {
+              this.add(bags, u, ct);
+              diagnostics.mediaRequests++;
+              diagnostics.requestsObserved++;
+              recordSignal('cdp-media-request', u, diagnostics.playClicked ? 0.97 : 0.80, 'cdp-network');
+              if (event?.request?.headers?.Referer || event?.request?.headers?.referer) {
+                mediaReferers.set(canonicalMediaKey(u), event.request.headers.Referer || event.request.headers.referer);
+              }
+            }
+          } catch (e) {}
+        });
+        cdp.on('Network.responseReceived', (event) => {
+          try {
+            const u = event?.response?.url;
+            const ct = event?.response?.mimeType || '';
+            if (!u || (!looksLikeMedia(u, ct) && !looksLikeSubtitle(u, ct))) return;
+            this.add(bags, u, ct);
+            diagnostics.mediaRequests++;
+            recordSignal('cdp-media-response', u, 0.93, 'cdp-network');
+          } catch (e) {}
+        });
+        diagnostics.strategies.push('cdp-network');
+      }
+    } catch (e) {
+      diagnostics.cdpWarning = String(e.message || e);
+    }
 
     const harvestDomAndHooks = async (label) => {
       try { await sleep(deep ? 350 : 150); } catch (e) {}
@@ -1775,6 +1819,11 @@ class VideoExtractor {
       diagnostics.playerInteraction = await preparePlayerInteraction(page, true);
       await sleep(deep ? 900 : 600);
       // Interaction round 1: visible player surface first, then bounded play/server controls.
+      try {
+        const vp = page.viewportSize() || { width: 1366, height: 768 };
+        await page.mouse.move(Math.round(vp.width * 0.50), Math.round(vp.height * 0.52), { steps: 8 }).catch(() => {});
+        await sleep(120);
+      } catch (e) {}
       diagnostics.playClicked = await tryClickPlay(page);
       diagnostics.html5Play = await forceHtml5Play(page);
       diagnostics.tabsClicked = await tryClickPlayerTabs(page);
@@ -2161,6 +2210,58 @@ class VideoExtractor {
   }
 }
 
+function normalizeSearchText(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[._-]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function levenshteinSimilarity(a = '', b = '') {
+  const aa = normalizeSearchText(a);
+  const bb = normalizeSearchText(b);
+  if (!aa || !bb) return 0;
+  if (aa === bb) return 1;
+  if (aa.includes(bb) || bb.includes(aa)) return 0.94;
+  const rows = Math.min(aa.length, 120);
+  const a1 = aa.slice(0, rows);
+  const b1 = bb.slice(0, 120);
+  const prev = new Array(b1.length + 1).fill(0).map((_, i) => i);
+  for (let i = 1; i <= a1.length; i++) {
+    let left = i;
+    const next = [i];
+    for (let j = 1; j <= b1.length; j++) {
+      const cost = a1[i - 1] === b1[j - 1] ? 0 : 1;
+      const v = Math.min(prev[j] + 1, next[j - 1] + 1, left + cost);
+      next[j] = v;
+      left = v;
+    }
+    for (let j = 0; j < next.length; j++) prev[j] = next[j];
+  }
+  const distance = prev[b1.length];
+  return Math.max(0, 1 - distance / Math.max(a1.length, b1.length, 1));
+}
+
+function searchIdentityScore(query = '', item = {}, identity = null) {
+  const q = normalizeSearchText(query);
+  const title = normalizeSearchText(`${item.title || ''} ${item.name || ''}`);
+  const urlText = normalizeSearchText(String(item.url || '').replace(/[/?#=&]+/g, ' '));
+  const aliases = Array.isArray(identity?.aliases) ? identity.aliases : [];
+  let best = Math.max(titleSimilarity(q, title), levenshteinSimilarity(q, title) * 0.98);
+  for (const alias of aliases) {
+    best = Math.max(best, titleSimilarity(alias, title), levenshteinSimilarity(alias, title) * 0.98);
+  }
+  best = Math.max(best, titleSimilarity(q, urlText) * 0.92);
+  return Math.min(1, best);
+}
+
 class SearchProvider {
   static TITLE_STOPWORDS = new Set([
     'watch', 'stream', 'online', 'episode', 'season', 'movie', 'movies', 'series', 'film', 'films', 'play', 'embed', 'player', 'video', 'full', 'hd', 'web', 'مترجم', 'فيلم', 'مسلسل', 'حلقة', 'مشاهدة', 'تحميل', 'مباشر', 'الحلقة', 'الموسم'
@@ -2376,19 +2477,46 @@ class SearchProvider {
 
   async resolveTitle(query) {
     if (!TMDB_API_KEY) return null;
+    const rawQuery = String(query || '').trim().slice(0, 200);
+    if (!rawQuery) return null;
+    const cacheKey = `vdpro:identity:${crypto.createHash('sha1').update(rawQuery.toLowerCase()).digest('hex')}`;
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch (e) {}
     try {
       const { data } = await httpClient.get('https://api.themoviedb.org/3/search/multi', {
-        params: { api_key: TMDB_API_KEY, query: String(query || '').trim(), include_adult: false, language: 'en-US', page: 1 },
-        timeout: 10000
+        params: { api_key: TMDB_API_KEY, query: rawQuery, include_adult: false, language: 'en-US', page: 1 },
+        timeout: 7000
       });
-      const item = (data?.results || []).find((entry) => entry.media_type === 'movie' || entry.media_type === 'tv');
+      const candidates = (data?.results || []).filter((entry) => entry.media_type === 'movie' || entry.media_type === 'tv');
+      if (!candidates.length) return null;
+      const item = candidates
+        .map((entry) => ({ entry, score: Math.max(titleSimilarity(rawQuery, entry.title || entry.name || ''), titleSimilarity(rawQuery, entry.original_title || entry.original_name || '')) }))
+        .sort((a, b) => b.score - a.score)[0]?.entry;
       if (!item) return null;
-      return {
-        title: item.title || item.name || String(query || '').trim(),
-        year: String(item.release_date || item.first_air_date || '').slice(0, 4) || null,
-        type: item.media_type === 'tv' ? 'series' : 'movie',
-        tmdbId: item.id
-      };
+      const title = item.title || item.name || rawQuery;
+      const original = item.original_title || item.original_name || null;
+      const year = String(item.release_date || item.first_air_date || '').slice(0, 4) || null;
+      const type = item.media_type === 'tv' ? 'series' : 'movie';
+      const aliases = [...new Set([title, original].filter(Boolean))];
+      // One bounded details request gives regional/original alternatives when available.
+      try {
+        const endpoint = type === 'movie'
+          ? `https://api.themoviedb.org/3/movie/${item.id}`
+          : `https://api.themoviedb.org/3/tv/${item.id}`;
+        const { data: details } = await httpClient.get(endpoint, {
+          params: { api_key: TMDB_API_KEY, language: 'en-US', append_to_response: 'alternative_titles' },
+          timeout: 5000
+        });
+        const alt = details?.alternative_titles;
+        for (const row of [...(alt?.titles || []), ...(alt?.results || [])]) {
+          if (row?.title && aliases.length < SEARCH_MAX_ALIASES) aliases.push(String(row.title));
+        }
+      } catch (e) {}
+      const result = { title, year, type, tmdbId: item.id, aliases: [...new Set(aliases)].slice(0, SEARCH_MAX_ALIASES) };
+      try { await redis.set(cacheKey, JSON.stringify(result), 'PX', SEARCH_CACHE_TTL_MS); } catch (e) {}
+      return result;
     } catch (e) {
       logger.debug({ error: e.message }, 'TMDB title resolution failed');
       return null;
@@ -2784,7 +2912,7 @@ class SearchProvider {
     const requested = this.normalizeSiteHint(site);
     const identity = await this.resolveTitle(query);
     const identityQuery = identity ? `${identity.title}${identity.year ? ` ${identity.year}` : ''}` : String(query || '');
-    const matchQueries = [String(query || ''), identityQuery].filter(Boolean);
+    const matchQueries = [String(query || ''), identityQuery, ...(identity?.aliases || [])].filter(Boolean).slice(0, SEARCH_MAX_ALIASES + 2);
     let sources = this.getCatalogSources(category).filter((source) => {
       if (!requested.domain) return true;
       try {
@@ -2792,38 +2920,42 @@ class SearchProvider {
         return hosts.some((host) => host === requested.domain || host.endsWith('.' + requested.domain));
       } catch (e) { return false; }
     });
-    // For movies/series, the user-provided TMDB-capable catalog is authoritative.
-    // Do not silently broaden to Netflix/Prime/Disney or unrelated catalog entries.
     if (!requested.domain && String(category || '').trim().toLowerCase() === 'movies_series') {
       const tmdbSources = sources.filter((source) => source.tmdb === true);
       if (tmdbSources.length) sources = tmdbSources;
     }
-    if (!requested.domain) sources = sources.slice(0, SEARCH_CATALOG_MAX_SOURCES);
+    sources = sources.slice(0, requested.domain ? 8 : SEARCH_CATALOG_MAX_SOURCES);
+
     const collected = [];
-    // Deliberately sequential: one source gets a bounded probe before the next source starts.
-    for (const source of sources) {
-      try {
+    // Bounded parallel probing: faster than fully sequential probing while keeping a small
+    // footprint on free/small servers. A successful strong result cancels further rounds.
+    for (let offset = 0; offset < sources.length; offset += CATALOG_CONCURRENCY) {
+      const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
+      const settled = await Promise.allSettled(batch.map(async (source) => {
         const direct = await withTimeout(this.searchSourceDirect(identityQuery, source), CATALOG_SOURCE_TIMEOUT_MS + 1500, 'CATALOG_SOURCE_TIMEOUT');
         const items = direct.length
           ? direct
           : await withTimeout(this.searchByName(identityQuery, source.url, { catalogFast: true, identity }), CATALOG_SOURCE_TIMEOUT_MS + 2500, 'CATALOG_SEARCH_TIMEOUT');
-        const tagged = items.map((item) => ({ ...item, sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category, tmdbId: identity?.tmdbId || item.tmdbId || null, resolvedTitle: identity?.title || null, resolvedYear: identity?.year || null, resolvedType: identity?.type || null }));
-        collected.push(...tagged);
-        if (tagged.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)))) break;
-      } catch (error) {
-        logger.debug({ source: source.name, error: error.message }, 'Sequential catalog source probe failed');
+        return items.map((item) => ({
+          ...item,
+          sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category,
+          tmdbId: identity?.tmdbId || item.tmdbId || null, resolvedTitle: identity?.title || null,
+          resolvedYear: identity?.year || null, resolvedType: identity?.type || null
+        }));
+      }));
+      for (const result of settled) {
+        if (result.status === 'fulfilled') collected.push(...result.value);
       }
+      const strong = collected.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)) && Number(item.matchScore ?? item.score ?? 0) >= 0.55);
+      if (strong) break;
     }
     const unique = new Map();
     for (const item of collected) {
+      if (!item?.url) continue;
       let key = item.url;
-      try {
-        const parsed = new URLParser(item.url);
-        parsed.hash = '';
-        key = parsed.href.toLowerCase();
-      } catch (e) {}
-      if (!key || unique.has(key)) continue;
-      unique.set(key, item);
+      try { const parsed = new URLParser(item.url); parsed.hash = ''; key = parsed.href.toLowerCase(); } catch (e) {}
+      const previous = unique.get(key);
+      if (!previous || Number(item.score ?? item.matchScore ?? 0) > Number(previous.score ?? previous.matchScore ?? 0)) unique.set(key, item);
     }
     return [...unique.values()].sort((a, b) =>
       Number(this.isWatchCandidate(b)) - Number(this.isWatchCandidate(a)) ||
@@ -2835,521 +2967,83 @@ class SearchProvider {
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return [];
     const siteInfo = this.normalizeSiteHint(site);
-    const map = new Map();
     const identity = options.identity || await this.resolveTitle(q);
     const canonicalTitle = identity?.title || q;
     const identitySuffix = identity?.year ? ` ${identity.year}` : '';
     const typeSuffix = identity?.type === 'series' ? ' series tv' : identity?.type === 'movie' ? ' movie film' : '';
-    const titleForms = [...new Set([q, canonicalTitle])];
+    const aliases = [...new Set([q, canonicalTitle, ...(identity?.aliases || [])].filter(Boolean))].slice(0, SEARCH_MAX_ALIASES + 1);
     const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
-    // Quote only the resolved title. Quoting the complete title+year+type+intent
-    // string makes engines reject valid pages when one token is absent from a title.
-    const queryVariants = [...new Set(titleForms.flatMap((term) => {
-      const quoted = '"' + String(term).replace(/"/g, ' ') + '"';
-      return [
-        `${scoped}${quoted}${identitySuffix}${typeSuffix}`,
-        `${scoped}${quoted}${identitySuffix}${typeSuffix} watch`,
-        `${scoped}${quoted}${identitySuffix}${typeSuffix} video`,
-        `${scoped}${quoted}${identitySuffix}${typeSuffix} play`,
-        `${scoped}${quoted}${identitySuffix}${typeSuffix} مشاهدة`,
-        `${scoped}${quoted}${identitySuffix}${typeSuffix} فيديو`
-      ];
-    }))];
-    const quotedCanonical = '"' + String(canonicalTitle).replace(/"/g, ' ') + '"';
-    const watchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`;
-    const arabicWatchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة`;
+    const build = (term, intent = '') => {
+      const quoted = `"${String(term).replace(/"/g, ' ')}"`;
+      return `${scoped}${quoted}${identitySuffix}${typeSuffix}${intent ? ` ${intent}` : ''}`.trim();
+    };
+    const primaryVariants = [...new Set(aliases.flatMap((term) => [
+      build(term), build(term, 'watch'), build(term, 'video'), build(term, 'episode'), build(term, 'مشاهدة')
+    ]))].slice(0, SEARCH_MAX_VARIANTS);
+    const quotedCanonical = `"${String(canonicalTitle).replace(/"/g, ' ')}"`;
+    const watchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`.trim();
+    const arabicWatchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة`.trim();
+
+    const cacheKey = `vdpro:search:${crypto.createHash('sha1').update(JSON.stringify({ q: q.toLowerCase(), site: siteInfo.domain || siteInfo.raw, identity: identity?.tmdbId || null, fast: !!options.catalogFast })).digest('hex')}`;
+    if (!options.noCache) {
+      try { const cached = await redis.get(cacheKey); if (cached) return JSON.parse(cached); } catch (e) {}
+    }
+    const map = new Map();
     const runTier = async (tasks) => {
       for (let offset = 0; offset < tasks.length; offset += SEARCH_QUERY_CONCURRENCY) {
         const batch = tasks.slice(offset, offset + SEARCH_QUERY_CONCURRENCY);
-        const settled = await Promise.allSettled(batch);
-        settled.filter((result) => result.status === 'rejected').forEach((result) => {
-          logger.debug({ error: result.reason?.message || String(result.reason) }, 'Search provider query failed');
-        });
+        await Promise.allSettled(batch);
+        if ([...map.values()].filter((item) => this.isWatchCandidate(item) && this.siteMatches(item, siteInfo)).length >= 8) break;
       }
       return [...map.values()];
     };
     const hasStrongWatch = () => [...map.values()].some((item) =>
-      this.isWatchCandidate(item) && this.matchesRequestedTitle(q, item) && Number(item.score || 0) >= 0.12 && this.siteMatches(item, siteInfo)
+      this.isWatchCandidate(item) && this.matchesRequestedTitle(q, item) && Number(item.score || 0) >= 0.55 && this.siteMatches(item, siteInfo)
     );
 
-    if (options.catalogFast) {
-      await runTier(queryVariants.flatMap((variant) => [
-        this.searchDuckDuckGoHtml(variant, map),
-        this.searchBing(variant, map),
-        this.searchBrave(variant, map)
-      ]));
-      let fastResults = [...map.values()].filter((r) => this.siteMatches(r, siteInfo));
-      fastResults.sort((a, b) => b.score - a.score);
-      return fastResults.slice(0, 10).map((r, i) => ({
-        rank: i + 1,
-        name: r.name,
-        title: r.title,
-        url: r.url,
-        pageUrl: r.pageUrl || r.url,
-        matchScore: Math.round(r.score * 1000) / 1000,
-        source: r.source,
-        type: r.type,
-        year: r.year,
-        overview: r.overview,
-        imdbId: r.imdbId,
-        tmdbId: r.tmdbId,
-        poster: r.poster,
-        candidateClass: r.candidateClass || 'unknown'
-      }));
-    }
-
-    // Tier 1: multi-query broad discovery. Every variant is merged into the same de-duplicated map.
-    await runTier(queryVariants.flatMap((variant) => [
+    const providers = (variant) => [
       this.searchDuckDuckGoHtml(variant, map),
       this.searchBing(variant, map),
       this.searchDuckDuckGoAPI(variant, map),
       this.searchBrave(variant, map)
-    ]));
+    ];
+    await runTier(primaryVariants.flatMap(providers));
 
-    // Tier 2: watch-page intent and optional domain restriction.
-    if (!hasStrongWatch()) {
-      await runTier([
-        ...queryVariants.slice(1).flatMap((variant) => [
-          this.searchDuckDuckGoHtml(variant + ' watch', map),
-          this.searchBing(variant + ' watch', map)
-        ]),
-        this.searchDuckDuckGoHtml(watchQuery, map),
-        this.searchBing(watchQuery, map),
-        this.searchDuckDuckGoHtml(arabicWatchQuery, map),
-        this.searchBing(arabicWatchQuery, map),
-        this.searchDuckDuckGoAPI(watchQuery, map),
-        this.searchBrave(watchQuery, map)
+    if (!hasStrongWatch() && !options.catalogFast) {
+      await runTier([watchQuery, arabicWatchQuery].flatMap(providers));
+    }
+    if (!options.catalogFast) {
+      // Metadata providers enrich identity but never become watch candidates.
+      await Promise.allSettled([
+        this.searchTMDB(canonicalTitle, map),
+        this.searchOMDb(canonicalTitle, map),
+        this.searchWikipedia(canonicalTitle, map)
       ]);
     }
 
-    // Tier 3: metadata providers are used only to improve identity matching, never as watch pages.
-    if (!hasStrongWatch()) {
-      await runTier([
-        this.searchWikipedia(q, map),
-        this.searchTMDB(q, map),
-        this.searchOMDb(q, map)
-      ]);
-    }
-
-    let results = [...map.values()].sort((a, b) => b.score - a.score);
-    if (siteInfo.raw) results = results.filter((r) => this.siteMatches(r, siteInfo));
-    const strong = results.filter((r) => r.score >= 0.12);
-    if (strong.length >= 2) results = strong;
-    return results.slice(0, 15).map((r, i) => ({
-      rank: i + 1,
-      name: r.name,
-      title: r.title,
-      url: r.url,
-      pageUrl: r.pageUrl || r.url,
-      matchScore: Math.round(r.score * 1000) / 1000,
-      source: r.source,
-      type: r.type,
-      year: r.year,
-      overview: r.overview,
-      imdbId: r.imdbId,
-      tmdbId: r.tmdbId,
-      poster: r.poster,
-      candidateClass: r.candidateClass || 'unknown',
-      ...(r.sourceType ? { sourceType: r.sourceType, sourceName: r.sourceName, sourceUrl: r.sourceUrl, catalogCategory: r.catalogCategory } : {})
-    }));
-  }
-}
-
-class CacheManager {
-  constructor() {
-    this.l1 = new Map();
-    this.max = 80;
-  }
-  key(url, quality, deep) {
-    return crypto.createHash('sha256').update(url + '::' + quality + '::' + (deep ? 1 : 0)).digest('hex');
-  }
-  isReusable(data) {
-    if (!data || data.success !== true || data.validated !== true || !data.primaryUrl) return false;
-    const ttl = data.linkMeta?.ttlSeconds;
-    if (data.linkMeta?.likelySigned && typeof ttl === 'number' && ttl > 0 && ttl < 120) return false;
-    return true;
-  }
-  async get(url, quality = 'auto', deep = false) {
-    const k = this.key(url, quality, deep);
-    if (this.l1.has(k)) {
-      metrics.cacheHits.labels('l1').inc();
-      const cached = this.l1.get(k);
-      if (this.isReusable(cached)) return cached;
-      this.l1.delete(k);
-    }
-    try {
-      const raw = await redis.get('cache:' + k);
-      if (raw) {
-        metrics.cacheHits.labels('l2').inc();
-        const cached = JSON.parse(raw);
-        if (this.isReusable(cached)) {
-          this.l1.set(k, cached);
-          return cached;
-        }
-        await redis.del('cache:' + k).catch(() => {});
-      }
-    } catch (e) {}
-    return null;
-  }
-  async set(url, data, quality = 'auto', deep = false) {
-    const k = this.key(url, quality, deep);
-    if (this.l1.size >= this.max) this.l1.delete(this.l1.keys().next().value);
-    this.l1.set(k, data);
-    try {
-      await redis.setex('cache:' + k, 86400, JSON.stringify(data));
-    } catch (e) {}
-  }
-}
-const cacheManager = new CacheManager();
-
-class SingleFlight {
-  constructor() {
-    this.map = new Map();
-  }
-  h(k) {
-    return crypto.createHash('sha256').update(k).digest('hex');
-  }
-  get(k) {
-    return this.map.get(this.h(k));
-  }
-  set(k, p) {
-    const id = this.h(k);
-    this.map.set(id, p);
-    setTimeout(() => this.map.delete(id), 180000);
-  }
-  del(k) {
-    if (k) this.map.delete(this.h(k));
-  }
-}
-const singleFlight = new SingleFlight();
-
-const extractionQueue = new Queue('vd-pro-v44', REDIS_URL, {
-  settings: {
-    stalledInterval: 20000,
-    maxStalledCount: 1,
-    lockDuration: JOB_LOCK_MS,
-    lockRenewTime: Math.floor(JOB_LOCK_MS / 3)
-  },
-  defaultJobOptions: {
-    removeOnComplete: 80,
-    removeOnFail: 40,
-    attempts: 2,
-    backoff: { type: 'fixed', delay: 2000 }
-  }
-});
-
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-if (ALLOWED_ORIGINS.length) {
-  app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
-} else if (NODE_ENV === 'production') {
-  app.use(cors({ origin: false }));
-} else {
-  app.use(cors());
-}
-app.use(express.json({ limit: '1mb' }));
-
-app.use((req, res, next) => {
-  const t0 = Date.now();
-  res.on('finish', () => {
-    try {
-      metrics.httpDuration
-        .labels(req.method, req.route?.path || req.path, res.statusCode)
-        .observe((Date.now() - t0) / 1000);
-    } catch (e) {}
-  });
-  next();
-});
-
-const verifyToken = async (req, res, next) => {
-  try {
-    const auth = String(req.headers.authorization || '');
-    if (!/^Bearer\s+\S+$/i.test(auth)) return res.status(401).json({ success: false, error: 'No token', code: 'NO_TOKEN' });
-    const token = auth.replace(/^Bearer\s+/i, '').trim();
-    const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
-    if (db) {
-      const user = await db.collection('users').findOne({ apiKey: decoded.apiKey });
-      if (!user) return res.status(403).json({ success: false, error: 'User not found', code: 'USER_NOT_FOUND' });
-      req.user = user;
-    } else {
-      req.user = { _id: decoded.apiKey, plan: 'free', apiKey: decoded.apiKey };
-    }
-    next();
-  } catch (e) {
-    return res.status(403).json({ success: false, error: 'Invalid token', code: 'INVALID_TOKEN' });
-  }
-};
-
-function rateLimitKey(req) {
-  try {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    if (token) {
-      const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
-      if (decoded?.apiKey) return 'u:' + decoded.apiKey;
-    }
-  } catch (e) {}
-  const id = req.user?._id?.toString?.() || req.user?._id;
-  if (id) return 'u:' + id;
-  return 'ip:' + (req.ip || 'unknown');
-}
-
-app.use(
-  '/api/v1/',
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 120,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skip: (req) => req.path === '/health' || req.path === '/api/v1/health',
-    keyGenerator: rateLimitKey
-  })
-);
-
-app.get('/api/v1/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    ready: startupReady,
-    startupError: startupError ? 'STARTUP_DEGRADED' : null,
-    name: 'Vd-Pro',
-    version: '4.10.2',
-    redis: redis.status,
-    mongodb: db ? 'connected' : 'disconnected',
-    limits: {
-      hardExtractMs: HARD_EXTRACT_MS,
-      navTimeoutMs: NAV_TIMEOUT_MS,
-      jobProcessTimeoutMs: JOB_PROCESS_TIMEOUT_MS
-    },
-    searchProviders: {
-      ddgApi: true,
-      wikipedia: true,
-      tmdb: !!TMDB_API_KEY,
-      omdbImdb: !!OMDB_API_KEY,
-      braveApi: !!BRAVE_SEARCH_API_KEY
-    },
-    proxy: { configured: PROXIES.length > 0, count: PROXIES.length, checked: proxyManager.proxies.filter((p) => p.health.checked).length, available: proxyManager.proxies.filter((p) => p.health.available).length },
-    mediaFlow: { configured: isMediaFlowProxyConfigured() },
-    notes: {
-      drm: 'Detected and reported; not decrypted',
-      captcha: 'Detected and reported; not solved',
-      signedUrls: 'TTL/referer via linkMeta when possible'
-    },
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.post('/api/v1/auth/register', async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ success: false, error: 'Missing fields' });
-    const normalized = String(email).trim().toLowerCase();
-    if (normalized.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return res.status(400).json({ success: false, error: 'Invalid email' });
-    if (String(password).length < 8 || String(password).length > 256) return res.status(400).json({ success: false, error: 'Weak password' });
-    if (!db) return res.status(503).json({ success: false, error: 'DB unavailable' });
-    if (await db.collection('users').findOne({ email: normalized })) {
-      return res.status(400).json({ success: false, error: 'Email exists' });
-    }
-    const apiKey = crypto.randomBytes(32).toString('hex');
-    await db.collection('users').insertOne({
-      email: normalized,
-      password: await bcrypt.hash(password, 12),
-      apiKey,
-      plan: 'free',
-      createdAt: new Date()
-    });
-    const token = jwt.sign({ apiKey }, EFFECTIVE_JWT_SECRET, { expiresIn: '30d' });
-    res.status(201).json({ success: true, apiKey, token, plan: 'free' });
-  } catch (e) {
-    res.status(500).json({ success: false, error: 'Register failed' });
-  }
-});
-
-app.get('/api/v1/extract', verifyToken, async (req, res) => {
-  try {
-    const { url, quality = 'auto', deep } = req.query;
-    if (!url) return res.status(400).json({ success: false, error: 'URL required', code: 'MISSING_URL' });
-    const v = await SSRFValidator.validate(url);
-    if (!v.valid) return res.status(400).json({ success: false, error: v.reason, code: 'INVALID_URL' });
-    const deepFlag = deep === '1' || deep === 'true';
-    const cached = await cacheManager.get(url, quality, deepFlag);
-    if (cached) return res.json({ success: true, fromCache: true, ...applyMediaFlowProxy(cached) });
-    const flightKey = 'ex:' + url + '::' + quality + '::' + (deepFlag ? 1 : 0);
-    if (singleFlight.get(flightKey)) return res.status(202).json({ success: true, message: 'Processing', dedup: true });
-    const userId = req.user._id?.toString?.() || String(req.user._id);
-    const job = await withTimeout(
-      extractionQueue.add(
-        { type: 'extract', url, userId, quality, deep: deepFlag },
-        { timeout: HARD_EXTRACT_MS + 20000, attempts: 2 }
-      ),
-      10000,
-      'QUEUE_ADD_TIMEOUT'
-    );
-    singleFlight.set(flightKey, job.finished().catch(() => null));
-    res.status(202).json({ success: true, jobId: job.id, statusUrl: '/api/v1/jobs/' + job.id });
-  } catch (e) {
-    logger.error({ error: e.message }, 'Extraction request failed');
-    res.status(/QUEUE|Redis|connection|timeout/i.test(String(e.message || '')) ? 503 : 500).json({ success: false, error: 'Extraction request failed', code: 'EXTRACTION_REQUEST_ERROR' });
-  }
-});
-
-app.get('/api/v1/search', verifyToken, async (req, res) => {
-  try {
-      const { q, site = '', category = '', extract, quality = 'auto', deep } = req.query;
-    if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
-    if (String(q).length > 300) return res.status(400).json({ success: false, error: 'q too long', code: 'QUERY_TOO_LONG' });
-    const userId = req.user._id?.toString?.() || String(req.user._id);
-    // A named source search is an extraction request by default: discover the
-    // matching work page, probe it, then return the first validated stream.
-    // Search-only behavior remains available explicitly with extract=0/false.
-    const doExtract = extract === undefined
-      ? Boolean(String(site || '').trim())
-      : extract === '1' || extract === 'true';
-    const job = await withTimeout(
-      extractionQueue.add(
-        {
-          type: doExtract ? 'search_extract' : 'search',
-          search: String(q).trim(),
-          site: String(site || '').trim(),
-          category: String(category || '').trim(),
-          userId,
-          quality,
-          deep: deep === '1' || deep === 'true'
-        },
-        { timeout: doExtract ? HARD_EXTRACT_MS + 30000 : HARD_SEARCH_MS + 10000, attempts: 2 }
-      ),
-      10000,
-      'QUEUE_ADD_TIMEOUT'
-    );
-    res.status(202).json({
-      success: true,
-      jobId: job.id,
-      query: String(q).trim(),
-      ...(site ? { site: String(site).trim() } : {}),
-      ...(category ? { category: String(category).trim() } : {}),
-      mode: doExtract ? 'search_and_extract' : 'search_only',
-      statusUrl: '/api/v1/jobs/' + job.id
-    });
-  } catch (e) {
-    logger.error({ error: e.message }, 'Search request failed');
-    res.status(/QUEUE|Redis|connection|timeout/i.test(String(e.message || '')) ? 503 : 500).json({ success: false, error: 'Search request failed', code: 'SEARCH_REQUEST_ERROR' });
-  }
-});
-
-app.get('/api/v1/jobs/:jobId', verifyToken, async (req, res) => {
-  try {
-    const job = await withTimeout(extractionQueue.getJob(req.params.jobId), 8000, 'QUEUE_STATUS_TIMEOUT');
-    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
-    const userId = req.user._id?.toString?.() || String(req.user._id);
-    if (job.data && job.data.userId && String(job.data.userId) !== userId) {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
-    }
-    const state = await job.getState();
-    let result = null;
-    if (state === 'completed') {
-      result = job.returnvalue != null ? job.returnvalue : job._returnvalue != null ? job._returnvalue : null;
-    }
-    res.json({
-      success: true,
-      jobId: job.id,
-      state,
-      result,
-      attemptsMade: job.attemptsMade || 0,
-      failedReason: state === 'failed' ? job.failedReason || null : null
-    });
-  } catch (e) {
-    const queueError = /QUEUE_(?:ADD|STATUS)_TIMEOUT|Redis|connection|timeout/i.test(String(e.message || ''));
-    res.status(queueError ? 503 : 500).json({
-      success: false,
-      error: queueError ? 'Queue unavailable' : e.message,
-      code: queueError ? 'QUEUE_UNAVAILABLE' : 'JOB_STATUS_ERROR'
-    });
-  }
-});
-
-app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
-  res.json({ success: true, proxies: proxyManager.status() });
-});
-
-app.use(
-  '/api-docs',
-  swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.2' } })
-);
-
-function classifyExtractionFailure(result, primaryError = null) {
-  const d = { ...(result?.diagnostics || {}) };
-  const code = result?.errorCode || primaryError?.code || 'EXTRACTION_ERROR';
-  const mediaRequests = Number(d.mediaRequests || 0);
-  const mediaCandidates = Number(d.mediaCandidates || d.responseMediaCandidates || 0);
-  let failureClass = 'unknown';
-  let strategy = 'generic-retry';
-  if (d.captchaSuspected) { failureClass = 'bot-protection'; strategy = 'diagnose-page-protection'; }
-  else if (d.drmSuspected || code === 'DRM_PROTECTED') { failureClass = 'protected-media'; strategy = 'report-protected-media'; }
-  else if (code.includes('TIMEOUT') || d.timedOut) { failureClass = 'timeout'; strategy = mediaRequests ? 'validate-captured-media' : 'deep-iframe-network-retry'; }
-  else if (mediaRequests === 0) { failureClass = 'no-media-requests'; strategy = 'network-or-blocked-page'; }
-  else if (!result?.primaryUrl && (mediaRequests > 0 || mediaCandidates > 0)) { failureClass = 'media-detected-not-selected'; strategy = 'filter-validate-with-context'; }
-  else if (code === 'NO_STREAM_FOUND') { failureClass = 'no-public-media'; strategy = 'dom-script-iframe-scan'; }
-  d.failureClass = failureClass; d.failureStrategy = strategy; d.failureCode = code; d.mediaRequests = mediaRequests; d.mediaCandidates = mediaCandidates;
-  d.mediaSignal = d.mediaSignal || (mediaRequests > 0 || mediaCandidates > 0 ? 'candidates-unvalidated' : 'no-media-requests');
-  d.failureObservedAt = new Date().toISOString();
-  return d;
-}
-
-async function extractWithFallback(url, page, proxy, userId, options = {}) {
-  const startedAt = Date.now();
-  let primary = null;
-  let primaryError = null;
-  try {
-    primary = await new VideoExtractor().extract(url, page, userId, options);
-  } catch (error) {
-    primaryError = error;
-  }
-  const primaryDiagnostics = classifyExtractionFailure(primary || { success: false, errorCode: primaryError?.code || 'EXTRACTION_ERROR' }, primaryError);
-  const shouldFallback = Boolean(
-    primaryError ||
-    !primary?.success ||
-    !primary?.primaryUrl ||
-    ['EXTRACTION_TIMEOUT', 'EXTRACTION_ERROR', 'NO_STREAM_FOUND', 'STREAM_FOUND_BUT_UNPLAYABLE'].includes(primary?.errorCode)
-  );
-  if (!shouldFallback || !browserPool) { const out = primary || { success: false, error: primaryError?.message || 'Extraction failed', errorCode: primaryError?.code || 'EXTRACTION_ERROR' }; out.diagnostics = out.success ? (out.diagnostics || {}) : classifyExtractionFailure(out, primaryError); return out; }
-
-  let fallbackCtx = null;
-  try {
-    const remaining = Math.max(5000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - startedAt) - 5000);
-    const budget = Math.min(FALLBACK_BUDGET_MS, remaining);
-    const fallbackProxy = proxy || null;
-    const fallbackPage = page || (fallbackCtx = await browserPool.get(fallbackProxy)).page;
-    const cookies = await sessionManager.load(userId);
-    const fallbackDeep = Boolean(options.deep || ['no-media-requests', 'timeout'].includes(primaryDiagnostics.failureClass) || Number(primaryDiagnostics.framesVisited || 0) < 2);
-    const pageContextHeaders = { referer: url };
-    try {
-      pageContextHeaders.origin = new URLParser(url).origin;
-      pageContextHeaders['user-agent'] = await fallbackPage.evaluate(() => navigator.userAgent);
-    } catch (e) {}
-    const fallback = await withTimeout(
-      runFallbackExtraction({ page: fallbackPage, pageUrl: url, deep: fallbackDeep, quality: options.quality, cookies, headers: pageContextHeaders }),
-      budget,
-      'FALLBACK_EXTRACTION_TIMEOUT'
-    );
-    if (fallback.success) {
-      return {
-        ...fallback,
-        duration: (primary?.duration || 0) + (fallback.duration || 0),
-        diagnostics: { ...(primary?.diagnostics || {}), ...primaryDiagnostics, fallbackAttempted: true, fallbackSucceeded: true, fallbackStrategy: primaryDiagnostics.failureStrategy, fallbackDeep, fallbackDiagnostics: fallback.diagnostics, fallbackProxy: fallbackProxy ? { id: fallbackProxy.id } : null },
-        source: 'vd-pro-fallback'
-      };
-    }
-    if (primary) {
-      return { ...primary, diagnostics: classifyExtractionFailure({ ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackDiagnostics: fallback.diagnostics, fallbackErrorCode: fallback.errorCode } }) };
-    }
-    return fallback;
-  } catch (error) {
-    if (primary) return { ...primary, diagnostics: classifyExtractionFailure({ ...primary, diagnostics: { ...(primary.diagnostics || {}), fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message, fallbackErrorCode: error.code || 'FALLBACK_ERROR' } }, primaryError) };
-    const failed = { success: false, error: primaryError?.message || error.message, errorCode: primaryError?.code || error.code || 'EXTRACTION_ERROR', diagnostics: { fallbackAttempted: true, fallbackSucceeded: false, fallbackError: error.message } }; failed.diagnostics = classifyExtractionFailure(failed, primaryError); return failed;
-  } finally {
-    if (fallbackCtx) browserPool.release(fallbackCtx);
-  }
-}
+    const results = [...map.values()]
+      .filter((r) => this.siteMatches(r, siteInfo))
+      .map((r) => {
+        const fuzzy = searchIdentityScore(q, r, identity);
+        const aliasBoost = (identity?.aliases || []).some((a) => titleSimilarity(a, `${r.title || ''} ${r.name || ''}`) >= 0.85) ? 0.10 : 0;
+        return { ...r, matchScore: Math.round(Math.min(1, Math.max(r.score || 0, fuzzy + aliasBoost)) * 1000) / 1000 };
+      })
+      .sort((a, b) => {
+        const aw = this.isWatchCandidate(a) ? 1 : 0;
+        const bw = this.isWatchCandidate(b) ? 1 : 0;
+        return bw - aw || Number(b.matchScore ?? b.score ?? 0) - Number(a.matchScore ?? a.score ?? 0);
+      })
+      .slice(0, options.catalogFast ? 10 : 30)
+      .map((r, i) => ({
+        rank: i + 1, name: r.name, title: r.title, url: r.url, pageUrl: r.pageUrl || r.url,
+        matchScore: Number(r.matchScore ?? r.score ?? 0), score: r.score, source: r.source,
+        type: r.type, year: r.year, overview: r.overview, imdbId: r.imdbId, tmdbId: r.tmdbId,
+        poster: r.poster, candidateClass: r.candidateClass || 'unknown', resolvedTitle: identity?.title || null,
+        resolvedYear: identity?.year || null, resolvedType: identity?.type || null
+      }));
+    try { await redis.set(cacheKey, JSON.stringify(results), 'PX', SEARCH_CACHE_TTL_MS); } catch (e) {}
+    return results;
+  }}
 
 async function processExtractionJob(job) {
   const jobStartedAt = Date.now();
@@ -3691,13 +3385,13 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.10.2 listening on :' + PORT);
-  console.log('VD-PRO v4.10.2 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.10.3 listening on :' + PORT);
+  console.log('VD-PRO v4.10.3 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.10.2 starting...');
+    logger.info('Vd-Pro v4.10.3 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
