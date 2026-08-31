@@ -3198,7 +3198,12 @@ app.get('/api/v1/search', verifyToken, async (req, res) => {
     if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
     if (String(q).length > 300) return res.status(400).json({ success: false, error: 'q too long', code: 'QUERY_TOO_LONG' });
     const userId = req.user._id?.toString?.() || String(req.user._id);
-    const doExtract = extract === '1' || extract === 'true';
+    // A named source search is an extraction request by default: discover the
+    // matching work page, probe it, then return the first validated stream.
+    // Search-only behavior remains available explicitly with extract=0/false.
+    const doExtract = extract === undefined
+      ? Boolean(String(site || '').trim())
+      : extract === '1' || extract === 'true';
     const job = await withTimeout(
       extractionQueue.add(
         {
