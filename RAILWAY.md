@@ -28,6 +28,8 @@ WIDEVINE_TIMEOUT_MS=20000
 
 ## Optional environment variables
 
+`BRAVE_SEARCH_API_KEY` is recommended for production search. It adds an independent web index and runs alongside DDG/Bing; it does not replace the existing providers. Create the key in the Brave Search API dashboard and store it only as a Railway secret variable.
+
 ```text
 PORT=<leave unset; Railway supplies PORT>
 ALLOWED_ORIGINS=https://your-frontend.example
@@ -39,6 +41,7 @@ MEDIAFLOW_PROXY_URL=
 MEDIAFLOW_PROXY_PASSWORD=
 MEDIAFLOW_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 OMDB_API_KEY=
+BRAVE_SEARCH_API_KEY=
 SOURCE_DOMAIN_ALIASES=
 CATALOG_CONCURRENCY=1
 SEARCH_QUERY_CONCURRENCY=2

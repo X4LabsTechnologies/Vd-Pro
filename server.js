@@ -65,6 +65,7 @@ const PROXIES = [...new Set([...PROXY_ENV.split(','), SINGLE_PROXY_ENV].map((p) 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
 const OMDB_API_KEY = process.env.OMDB_API_KEY || '';
+const BRAVE_SEARCH_API_KEY = process.env.BRAVE_SEARCH_API_KEY || '';
 
 function envMs(name, fallback, minimum, maximum) {
   const parsed = Number.parseInt(process.env[name] || '', 10);
@@ -2199,6 +2200,31 @@ class SearchProvider {
     }
   }
 
+  async searchBrave(query, map) {
+    if (!BRAVE_SEARCH_API_KEY) return;
+    try {
+      const { data } = await httpClient.get('https://api.search.brave.com/res/v1/web/search', {
+        params: { q: query, count: 20, search_lang: /[\u0600-\u06ff]/.test(query) ? 'ar' : 'en', safesearch: 'off' },
+        timeout: 9000,
+        headers: { Accept: 'application/json', 'X-Subscription-Token': BRAVE_SEARCH_API_KEY }
+      });
+      for (const result of data?.web?.results || []) {
+        if (!result?.url || !result?.title) continue;
+        this.add(map, {
+          name: result.title,
+          title: result.description ? `${result.title} — ${result.description}` : result.title,
+          url: result.url,
+          source: 'brave-api',
+          query,
+          boost: 0.16,
+          overview: result.description || null
+        });
+      }
+    } catch (e) {
+      logger.warn({ error: e.message }, 'Brave Search API failed');
+    }
+  }
+
   async searchDuckDuckGoAPI(query, map) {
     try {
       const { data } = await httpClient.get('https://api.duckduckgo.com/', {
@@ -2772,7 +2798,8 @@ class SearchProvider {
     if (options.catalogFast) {
       await runTier(queryVariants.flatMap((variant) => [
         this.searchDuckDuckGoHtml(variant, map),
-        this.searchBing(variant, map)
+        this.searchBing(variant, map),
+        this.searchBrave(variant, map)
       ]));
       let fastResults = [...map.values()].filter((r) => this.siteMatches(r, siteInfo));
       fastResults.sort((a, b) => b.score - a.score);
@@ -2798,7 +2825,8 @@ class SearchProvider {
     await runTier(queryVariants.flatMap((variant) => [
       this.searchDuckDuckGoHtml(variant, map),
       this.searchBing(variant, map),
-      this.searchDuckDuckGoAPI(variant, map)
+      this.searchDuckDuckGoAPI(variant, map),
+      this.searchBrave(variant, map)
     ]));
 
     // Tier 2: watch-page intent and optional domain restriction.
@@ -2812,7 +2840,8 @@ class SearchProvider {
         this.searchBing(watchQuery, map),
         this.searchDuckDuckGoHtml(arabicWatchQuery, map),
         this.searchBing(arabicWatchQuery, map),
-        this.searchDuckDuckGoAPI(watchQuery, map)
+        this.searchDuckDuckGoAPI(watchQuery, map),
+        this.searchBrave(watchQuery, map)
       ]);
     }
 
@@ -3017,7 +3046,8 @@ app.get('/api/v1/health', (req, res) => {
       ddgApi: true,
       wikipedia: true,
       tmdb: !!TMDB_API_KEY,
-      omdbImdb: !!OMDB_API_KEY
+      omdbImdb: !!OMDB_API_KEY,
+      braveApi: !!BRAVE_SEARCH_API_KEY
     },
     proxy: { configured: PROXIES.length > 0, count: PROXIES.length, checked: proxyManager.proxies.filter((p) => p.health.checked).length, available: proxyManager.proxies.filter((p) => p.health.available).length },
     mediaFlow: { configured: isMediaFlowProxyConfigured() },
@@ -3262,7 +3292,7 @@ async function processExtractionJob(job) {
         watchCandidates,
         infoCandidates,
         count: results.length,
-        providers: ['ddg-api', 'wikipedia', TMDB_API_KEY ? 'tmdb' : null, OMDB_API_KEY ? 'omdb-imdb' : null].filter(
+        providers: ['ddg-api', 'bing-html', BRAVE_SEARCH_API_KEY ? 'brave-api' : null, 'wikipedia', TMDB_API_KEY ? 'tmdb' : null, OMDB_API_KEY ? 'omdb-imdb' : null].filter(
           Boolean
         )
       };
