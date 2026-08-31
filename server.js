@@ -2629,7 +2629,11 @@ class SearchProvider {
           `${origin}/search?query=${q}`,
           `${origin}/page/movies/?s=${q}`,
           `${origin}/page/series/?s=${q}`,
-          `${origin}/page/anime/?s=${q}`
+          `${origin}/page/anime/?s=${q}`,
+          `${origin}/wp-json/wp/v2/search?search=${q}&per_page=20`,
+          `${origin}/wp-json/wp/v2/posts?search=${q}&per_page=20`,
+          `${origin}/feed/?s=${q}`,
+          `${origin}/feed/?post_type=post&s=${q}`
         ];
     const out = new Map();
     const add = (item) => {
@@ -2682,6 +2686,20 @@ class SearchProvider {
           for (const loc of locs) {
             try { add({ url: new URLParser(loc).href, title: decodeURIComponent(new URLParser(loc).pathname.split('/').filter(Boolean).pop() || '').replace(/[-_]+/g, ' ') }); } catch (e) {}
           }
+        } else if (/\/wp-json\/wp\/v2\/(search|posts)(?:[/?]|$)/i.test(endpoint)) {
+          const rows = Array.isArray(data) ? data : [];
+          for (const row of rows) {
+            const rendered = row.title?.rendered || row.title || row.name || '';
+            const link = row.url || row.link;
+            if (link) add({ url: link, title: cheerio.load(String(rendered)).text() });
+          }
+        } else if (/\/feed\/(?:[?#/]|$)/i.test(endpoint)) {
+          const $ = cheerio.load(String(data || ''), { xmlMode: true });
+          $('item, entry').each((_, el) => {
+            const title = $(el).find('title').first().text().trim();
+            const link = $(el).find('link').first().attr('href') || $(el).find('link').first().text().trim();
+            if (link) add({ url: link, title });
+          });
         } else {
           const $ = cheerio.load(String(data || ''));
           $('a[href]').each((_, el) => {
@@ -2701,6 +2719,45 @@ class SearchProvider {
     }
     clearTimeout(abortTimer);
     return [...out.values()].sort((a, b) => Number(b.exactTitle) - Number(a.exactTitle) || b.score - a.score).slice(0, 10);
+  }
+
+  async searchSourceBrowser(query, source, page) {
+    if (!page || !source?.url) return [];
+    const base = new URLParser(source.url);
+    const q = String(query || '').trim().slice(0, 200);
+    const encoded = encodeURIComponent(q);
+    const endpoints = [
+      `${base.origin}/?s=${encoded}`,
+      `${base.origin}/search?q=${encoded}`,
+      `${base.origin}/search?query=${encoded}`,
+      `${base.origin}/page/movies/?s=${encoded}`,
+      `${base.origin}/page/series/?s=${encoded}`
+    ];
+    const out = [];
+    const seen = new Set();
+    for (const endpoint of endpoints) {
+      try {
+        await page.goto(endpoint, { waitUntil: 'domcontentloaded', timeout: Math.min(NAV_TIMEOUT_MS, 12000) });
+        await page.waitForTimeout(700);
+        const links = await page.evaluate(() => [...document.querySelectorAll('a[href]')].map((a) => ({ url: a.href, title: (a.textContent || a.getAttribute('title') || '').replace(/\s+/g, ' ').trim() })).filter((x) => x.url && x.title));
+        for (const item of links) {
+          let parsed;
+          try { parsed = new URLParser(item.url); } catch (e) { continue; }
+          if (parsed.hostname !== base.hostname || seen.has(parsed.href)) continue;
+          seen.add(parsed.href);
+          const descriptor = `${parsed.href} ${item.title}`.toLowerCase();
+          if (/login|signup|apk|trending|popular|privacy|contact|about|category|search/.test(descriptor)) continue;
+          if (!this.isWorkOrWatchUrl(parsed.href)) continue;
+          const score = titleSimilarity(q, item.title) + (/watch|movie|film|series|episode|play|فيلم|مسلسل|حلقة|مشاهدة/i.test(descriptor) ? 0.25 : 0);
+          if (score < 0.12) continue;
+          out.push({ name: item.title, title: item.title, url: parsed.href, pageUrl: parsed.href, score, matchScore: Math.round(score * 1000) / 1000, source: 'catalog-browser', type: 'link', candidateClass: 'watch' });
+        }
+        if (out.length >= 10) break;
+      } catch (error) {
+        logger.debug({ source: source.name, endpoint, error: error.message }, 'Browser catalog search attempt failed');
+      }
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, 10);
   }
 
   async searchCatalogByName(query, category = '', site = '') {
@@ -3315,7 +3372,22 @@ async function processExtractionJob(job) {
       const catalogCategory = job.data.category || (job.data.site ? 'movies_series' : '');
       if (catalogCategory) {
         try {
-          catalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, catalogCategory, job.data.site), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
+          const requestedSite = searchProvider.normalizeSiteHint(job.data.site);
+          const browserSources = searchProvider.getCatalogSources(catalogCategory).filter((source) => {
+            if (!requestedSite.domain) return false;
+            try {
+              const host = new URLParser(source.url).hostname.toLowerCase().replace(/^www\./, '');
+              return host === requestedSite.domain || host.endsWith('.' + requestedSite.domain);
+            } catch (e) { return false; }
+          }).slice(0, 4);
+          for (const source of browserSources) {
+            const browserItems = await withTimeout(searchProvider.searchSourceBrowser(job.data.search, source, page), 14000, 'CATALOG_BROWSER_TIMEOUT');
+            catalogResults.push(...browserItems.map((item) => ({ ...item, sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory })));
+            if (catalogResults.some((item) => searchProvider.isWatchCandidate(item) && searchProvider.matchesRequestedTitle(job.data.search, item))) break;
+          }
+          const httpCatalogResults = await withTimeout(searchProvider.searchCatalogByName(job.data.search, catalogCategory, job.data.site), CATALOG_SEARCH_MS, 'CATALOG_SEARCH_TIMEOUT');
+          catalogResults.push(...httpCatalogResults);
+
         } catch (catalogError) {
           logger.warn({ category: catalogCategory, site: job.data.site, error: catalogError.message }, 'Catalog search budget exhausted; falling back to internet search');
         }
