@@ -1511,7 +1511,8 @@ class VideoExtractor {
       adaptiveDeep: false,
       fallbackAttempted: false,
       fallbackSucceeded: false,
-      mediaSignal: 'no-media-requests'
+      mediaSignal: 'no-media-requests',
+      signalMap: { events: [], edges: [], truncated: false }
     };
 
     const result = {
@@ -1542,6 +1543,16 @@ class VideoExtractor {
     const mediaRedirects = new Map();
     const frameLifecycle = new Set();
     let finished = false;
+    const recordSignal = (kind, url, confidence, triggeredBy = 'navigation') => {
+      try {
+        const parsed = new URLParser(String(url || ''));
+        const node = { kind, host: parsed.hostname.toLowerCase(), path: parsed.pathname.slice(0, 240), confidence, triggeredBy };
+        if (diagnostics.signalMap.events.length < 80) diagnostics.signalMap.events.push(node);
+        else diagnostics.signalMap.truncated = true;
+        const previous = diagnostics.signalMap.events[diagnostics.signalMap.events.length - 2];
+        if (previous && diagnostics.signalMap.edges.length < 120) diagnostics.signalMap.edges.push({ from: previous.kind, to: kind, triggeredBy });
+      } catch (e) {}
+    };
 
     const onRequest = (req) => {
       try {
@@ -1557,6 +1568,7 @@ class VideoExtractor {
         }
         if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
           diagnostics.mediaRequests++;
+          recordSignal('media-request', u, diagnostics.playClicked ? 0.95 : 0.72, diagnostics.playClicked ? 'play-interaction' : 'navigation-or-frame');
           this.add(bags, u);
         }
       } catch (e) {}
@@ -1570,6 +1582,7 @@ class VideoExtractor {
         const ct = response.headers()['content-type'] || '';
         if (looksLikeMedia(u, ct) || looksLikeSubtitle(u, ct)) {
           diagnostics.mediaRequests++;
+          recordSignal('media-response', u, 0.9, diagnostics.playClicked ? 'play-interaction' : 'network');
           this.add(bags, u, ct);
           return;
         }
@@ -2000,6 +2013,8 @@ class VideoExtractor {
     const picked = pickByQuality(validatedVariants.length ? validatedVariants : result.variants, quality);
     diagnostics.mediaCandidates = uniqueVariants.length;
     diagnostics.validatedCandidates = validatedVariants.length;
+    diagnostics.signalMap.summary = { events: diagnostics.signalMap.events.length, edges: diagnostics.signalMap.edges.length, mediaRequests: diagnostics.mediaRequests, mediaCandidates: uniqueVariants.length, validatedCandidates: validatedVariants.length, playClicked: diagnostics.playClicked };
+
     diagnostics.mediaSignal = picked && picked.validation?.valid
       ? 'validated'
       : (diagnostics.mediaRequests > 0 || uniqueVariants.length > 0)
