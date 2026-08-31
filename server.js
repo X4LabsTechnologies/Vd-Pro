@@ -2746,10 +2746,15 @@ class SearchProvider {
           if (parsed.hostname !== base.hostname || seen.has(parsed.href)) continue;
           seen.add(parsed.href);
           const descriptor = `${parsed.href} ${item.title}`.toLowerCase();
-          if (/login|signup|apk|trending|popular|privacy|contact|about|category|search/.test(descriptor)) continue;
+          if (/login|signup|apk|trending|popular|privacy|contact|about|category|categories|search|overview|نظرة عامة|عرض الكل|الرئيسية|الصفحة الرئيسية/.test(descriptor)) continue;
+          if (this.isSourceLandingCandidate(parsed.href, item.title)) continue;
           if (!this.isWorkOrWatchUrl(parsed.href)) continue;
-          const score = titleSimilarity(q, item.title) + (/watch|movie|film|series|episode|play|فيلم|مسلسل|حلقة|مشاهدة/i.test(descriptor) ? 0.25 : 0);
-          if (score < 0.12) continue;
+          const titleMatch = titleSimilarity(q, item.title);
+          const slugMatch = titleSimilarity(q, parsed.pathname.replace(/[\\/_-]+/g, ' '));
+          const identityMatch = Math.max(titleMatch, slugMatch);
+          if (!this.matchesRequestedTitle(q, { url: parsed.href, title: item.title })) continue;
+          const score = identityMatch + (/watch|movie|film|series|episode|play|embed|player|فيلم|مسلسل|حلقة|مشاهدة/i.test(descriptor) ? 0.25 : 0);
+          if (identityMatch < 0.2 || score < 0.35) continue;
           out.push({ name: item.title, title: item.title, url: parsed.href, pageUrl: parsed.href, score, matchScore: Math.round(score * 1000) / 1000, source: 'catalog-browser', type: 'link', candidateClass: 'watch' });
         }
         if (out.length >= 10) break;
