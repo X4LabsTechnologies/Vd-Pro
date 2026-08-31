@@ -8,7 +8,9 @@ function cleanBase(value) {
 }
 
 function isHlsUrl(value = '') {
-  return /\.m3u8(?:[?#]|$)|\/manifest(?:[/?]|$)|\/playlist(?:[/?]|$)/i.test(String(value));
+  const text = String(value || '');
+  if (/\.(?:svg|css|js|json|xml|png|jpe?g|gif|webp|ico|woff2?|ttf)(?:[?#]|$)/i.test(text)) return false;
+  return /\.m3u8(?:[?#]|$)|\/manifest(?:[/?]|$)|\/playlist(?:[/?]|$)/i.test(text);
 }
 
 export function mediaFlowProxyConfig(env = process.env) {
@@ -37,7 +39,7 @@ export function applyMediaFlowProxy(result, { env = process.env } = {}) {
   if (!result || typeof result !== 'object') return result;
   if (result.linkMeta?.proxyType === 'mediaflow-hls') return result;
   const cfg = mediaFlowProxyConfig(env);
-  if (!cfg.enabled) return result;
+  if (!cfg.enabled || result.success !== true || result.validated !== true) return result;
   const rewrite = (url, referer) => buildMediaFlowHlsUrl(url, { referer, env });
   const originalPrimary = result.primaryUrl;
   const primaryVariant = (result.variants || []).find((v) => v?.url === originalPrimary) || (result.variants || []).find((v) => v?.type === 'hls' && v?.url);
