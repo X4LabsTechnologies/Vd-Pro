@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.10.3 — Search & extraction hardening (same public API)
+ * Vd-Pro v4.11.0 — Search & extraction hardening (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -92,7 +92,8 @@ const DEFAULT_SOURCE_DOMAIN_ALIASES = [
   ['faselhd', ['https://web9118x.faselhdx.life', 'https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live', 'https://www.fasel-hd.cam']],
   ['egybest', ['https://egybests.live', 'https://egybest.si']],
   ['akwam', ['https://akwams.org', 'https://akwam.to']],
-  ['1embed', ['https://1embed.cc']]
+  ['1embed', ['https://1embed.cc']],
+  ['vidsrc', ['https://vidsrc.to', 'https://vidsrc.me', 'https://vidsrc.pm']]
 ];
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
   const [name, urls] = entry.split('=').map((part) => part?.trim());
@@ -2717,20 +2718,23 @@ class SearchProvider {
       const type = item.media_type === 'tv' ? 'series' : 'movie';
       const aliases = [...new Set([title, original].filter(Boolean))];
       // One bounded details request gives regional/original alternatives when available.
+      let imdbId = null;
       try {
         const endpoint = type === 'movie'
           ? `https://api.themoviedb.org/3/movie/${item.id}`
           : `https://api.themoviedb.org/3/tv/${item.id}`;
         const { data: details } = await httpClient.get(endpoint, {
-          params: { api_key: TMDB_API_KEY, language: 'en-US', append_to_response: 'alternative_titles' },
+          params: { api_key: TMDB_API_KEY, language: 'en-US', append_to_response: 'alternative_titles,external_ids' },
           timeout: 5000
         });
         const alt = details?.alternative_titles;
         for (const row of [...(alt?.titles || []), ...(alt?.results || [])]) {
           if (row?.title && aliases.length < SEARCH_MAX_ALIASES) aliases.push(String(row.title));
         }
+        imdbId = details?.external_ids?.imdb_id || details?.imdb_id || null;
+        if (imdbId && !/^tt\d+$/i.test(String(imdbId))) imdbId = null;
       } catch (e) {}
-      const result = { title, year, type, tmdbId: item.id, aliases: [...new Set(aliases)].slice(0, SEARCH_MAX_ALIASES) };
+      const result = { title, year, type, tmdbId: item.id, imdbId, aliases: [...new Set(aliases)].slice(0, SEARCH_MAX_ALIASES) };
       try { await redis.set(cacheKey, JSON.stringify(result), 'PX', SEARCH_CACHE_TTL_MS); } catch (e) {}
       return result;
     } catch (e) {
@@ -2837,7 +2841,7 @@ class SearchProvider {
     const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
     if (this.isInfoCandidate(item.url, item.source, item.title || item.name)) return false;
     if (this.isSourceLandingCandidate(item.url, item.title || item.name)) return false;
-    // Catalog and browser-discovered pages are already scoped to a source host.
+    if (item.discovery === 'identity-url' || String(item.source || '').startsWith('identity-')) return true;
     if (item.source === 'catalog-direct' || item.source === 'catalog-browser' || item.sourceType === 'catalog') {
       return this.isWorkOrWatchUrl(item.url) || /movie|series|episode|watch|embed|film|مسلسل|فيلم|حلقة|مشاهدة/i.test(descriptor);
     }
@@ -2866,11 +2870,8 @@ class SearchProvider {
     if (numeric.length && numericHits.length !== numeric.length) return false;
     // Prefer strong titleSimilarity in addition to token coverage
     const sim = titleSimilarity(query, `${item.title || ''} ${item.name || ''}`);
-    if (sim >= 0.72 && hits.length >= Math.max(1, Math.ceil(tokens.length * 0.4))) return true;
-    // Slug / path match (common on Arabic streaming mirrors)
-    const pathSim = titleSimilarity(query, String(item.url || '').replace(/[/?#_=-]+/g, ' '));
-    if (pathSim >= 0.7 && hits.length >= 1) return true;
-    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.45 : tokens.length === 2 ? 0.55 : 0.9);
+    if (sim >= 0.82 && hits.length >= Math.max(1, Math.ceil(tokens.length * 0.5))) return true;
+    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.55 : tokens.length === 2 ? 0.75 : 1);
   }
 
   normalizeSiteHint(site = '') {
@@ -2997,12 +2998,9 @@ class SearchProvider {
           `${origin}/?s=${q}`,
           `${origin}/search?q=${q}`,
           `${origin}/search?query=${q}`,
-          `${origin}/search/${q}`,
           `${origin}/page/movies/?s=${q}`,
           `${origin}/page/series/?s=${q}`,
           `${origin}/page/anime/?s=${q}`,
-          `${origin}/movies?search=${q}`,
-          `${origin}/series?search=${q}`,
           `${origin}/wp-json/wp/v2/search?search=${q}&per_page=20`,
           `${origin}/wp-json/wp/v2/posts?search=${q}&per_page=20`,
           `${origin}/feed/?s=${q}`,
@@ -3022,7 +3020,7 @@ class SearchProvider {
         const pathname = parsed.pathname.split('/').filter(Boolean).pop() || '';
         const identifierMatch = titleSimilarity(query, pathname.replace(/[-_]+/g, ' '));
         const contentMatch = Math.max(exactTitle, identifierMatch);
-        if (contentMatch < 0.08) return;
+        if (contentMatch < 0.12) return;
         const score = exactTitle >= 0.99 ? 1.25 : contentMatch + 0.2;
         const key = url.toLowerCase();
         if (!out.has(key) || score > out.get(key).score) out.set(key, {
@@ -3174,7 +3172,7 @@ class SearchProvider {
       } catch (error) {
         logger.debug?.({ source: source.name, error: error.message }, 'Catalog source skipped after bounded failure');
       }
-      const strong = collected.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)) && Number(item.matchScore ?? item.score ?? 0) >= 0.28 && this.isWorkOrWatchUrl(item.url));
+      const strong = collected.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)) && Number(item.matchScore ?? item.score ?? 0) >= 0.55 && this.isWorkOrWatchUrl(item.url));
       if (strong) break;
     }
     const unique = new Map();
@@ -3191,45 +3189,94 @@ class SearchProvider {
     );
   }
 
+
+  buildIdentityWatchCandidates(identity = {}, { site, limit = 20 } = {}) {
+    const imdbId = identity?.imdbId ? String(identity.imdbId).trim() : null;
+    const tmdbId = identity?.tmdbId != null ? String(identity.tmdbId) : null;
+    const type = identity?.type === 'series' ? 'tv' : 'movie';
+    const title = identity?.title || '';
+    const year = identity?.year || '';
+    const name = [title, year].filter(Boolean).join(' ').trim() || imdbId || tmdbId || 'title';
+    if (!imdbId && !tmdbId) return [];
+    const templates = [];
+    if (imdbId) {
+      templates.push(
+        { host: '1embed.cc', url: `https://1embed.cc/embed/${type === 'tv' ? 'tv' : 'movie'}/${imdbId}`, source: 'identity-1embed' },
+        { host: 'vidsrc.to', url: `https://vidsrc.to/embed/${type === 'tv' ? 'tv' : 'movie'}/${imdbId}`, source: 'identity-vidsrc' },
+        { host: 'vidsrc.me', url: `https://vidsrc.me/embed/${type === 'tv' ? 'tv' : 'movie'}/${imdbId}`, source: 'identity-vidsrc-me' },
+        { host: 'vidsrc.pm', url: `https://vidsrc.pm/embed/${type}/${imdbId}`, source: 'identity-vidsrc-pm' },
+        { host: 'vidsrc.in', url: `https://vidsrc.in/embed/${type}/${imdbId}`, source: 'identity-vidsrc-in' },
+        { host: '2embed.cc', url: `https://2embed.cc/embed/${type}/${imdbId}`, source: 'identity-2embed' },
+        { host: 'autoembed.co', url: `https://player.autoembed.cc/embed/${type}/${imdbId}`, source: 'identity-autoembed' },
+        { host: 'vidlink.pro', url: `https://vidlink.pro/${type}/${imdbId}`, source: 'identity-vidlink' },
+        { host: 'moviesapi.to', url: `https://moviesapi.to/movie/${imdbId}`, source: 'identity-moviesapi' },
+        { host: 'multiembed.mov', url: `https://multiembed.mov/?video_id=${imdbId}&tmdb=0`, source: 'identity-multiembed' },
+        { host: 'vidsrc.xyz', url: `https://vidsrc.xyz/embed/${type}/${imdbId}`, source: 'identity-vidsrc-xyz' },
+        { host: 'embed.su', url: `https://embed.su/embed/${type}/${imdbId}`, source: 'identity-embedsu' },
+        { host: 'smashystream.com', url: `https://player.smashy.stream/${type}/${imdbId}`, source: 'identity-smashy' },
+        { host: 'vidzee.wtf', url: `https://vidzee.wtf/embed/${type}/${imdbId}`, source: 'identity-vidzee' },
+        { host: '111movies.net', url: `https://111movies.net/movie/${imdbId}`, source: 'identity-111movies' }
+      );
+    }
+    if (tmdbId) {
+      templates.push(
+        { host: 'vidsrc.to', url: `https://vidsrc.to/embed/${type === 'tv' ? 'tv' : 'movie'}/${tmdbId}`, source: 'identity-vidsrc-tmdb' }
+      );
+    }
+    const siteInfo = this.normalizeSiteHint(site);
+    const needle = String(siteInfo.domain || siteInfo.raw || '').toLowerCase().replace(/^www\./, '');
+    const out = [];
+    for (const row of templates) {
+      if (needle) {
+        const hay = `${row.host} ${row.url} ${row.source}`.toLowerCase();
+        if (!hay.includes(needle) && !needle.includes(String(row.host).replace(/^www\./, ''))) continue;
+      }
+      out.push({
+        name, title: name, url: row.url, source: row.source, matchScore: 0.93, score: 0.93,
+        candidateClass: 'watch', resolvedTitle: title, identityYear: year,
+        imdbId: imdbId || undefined, tmdbId: tmdbId || undefined, discovery: 'identity-url'
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   async searchByName(query, site = '', options = {}) {
     const q = String(query || '').trim().slice(0, 300);
     if (!q) return [];
     const siteInfo = this.normalizeSiteHint(site);
     const identity = options.identity || await this.resolveTitle(q);
+    let identityCandidates = this.buildIdentityWatchCandidates(identity || {}, { site, limit: 16 });
+    if ((!identityCandidates || !identityCandidates.length) && site) {
+      identityCandidates = this.buildIdentityWatchCandidates(identity || {}, { site: '', limit: 16 });
+    }
     const canonicalTitle = identity?.title || q;
     const identitySuffix = identity?.year ? ` ${identity.year}` : '';
     const typeSuffix = identity?.type === 'series' ? ' series tv' : identity?.type === 'movie' ? ' movie film' : '';
     const aliases = [...new Set([q, canonicalTitle, ...(identity?.aliases || [])].filter(Boolean))].slice(0, SEARCH_MAX_ALIASES + 1);
-    // site: operator often returns zero hits for mirror domains. Prefer open
-    // web queries, then filter with siteMatches(). Keep one scoped variant only.
-    const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : '';
-    const hostHint = siteInfo.domain || siteInfo.raw || '';
-    const build = (term, intent = '', useSite = false) => {
+    const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
+    const build = (term, intent = '') => {
       const quoted = `"${String(term).replace(/"/g, ' ')}"`;
-      const prefix = useSite && scoped ? scoped : (hostHint && !useSite ? `${hostHint} ` : '');
-      return `${prefix}${quoted}${identitySuffix}${typeSuffix}${intent ? ` ${intent}` : ''}`.trim();
+      return `${scoped}${quoted}${identitySuffix}${typeSuffix}${intent ? ` ${intent}` : ''}`.trim();
     };
     const primaryVariants = [...new Set(aliases.flatMap((term) => [
-      build(term, 'مشاهدة'),
-      build(term, 'watch'),
-      build(term, 'فيلم'),
-      build(term, 'مسلسل'),
-      build(term, 'episode'),
-      build(term, '', true)
+      build(term), build(term, 'watch'), build(term, 'video'), build(term, 'episode'), build(term, 'مشاهدة')
     ]))].slice(0, SEARCH_MAX_VARIANTS);
+    // Quoted searches improve precision but often hide Arabic titles,
+    // transliterations, and sites with noisy metadata. Keep a small
+    // unquoted fallback set for recall.
     const fallbackVariants = [...new Set(aliases.slice(0, 4).flatMap((term) => [
-      `${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} watch online`,
-      `${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} مشاهدة مترجم`,
-      hostHint ? `${hostHint} ${String(term).replace(/"/g, ' ')}` : null
-    ].filter(Boolean)))];
+      `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} watch`,
+      `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} مشاهدة`
+    ]))];
     const allPrimaryVariants = [...new Set([
-      ...primaryVariants.slice(0, 8),
+      ...primaryVariants.slice(0, 6),
       ...fallbackVariants,
-      ...primaryVariants.slice(8)
+      ...primaryVariants.slice(6)
     ])].slice(0, SEARCH_MAX_VARIANTS);
     const quotedCanonical = `"${String(canonicalTitle).replace(/"/g, ' ')}"`;
-    const watchQuery = `${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`.trim();
-    const arabicWatchQuery = `${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة مترجم`.trim();
+    const watchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`.trim();
+    const arabicWatchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة`.trim();
 
     const cacheKey = `vdpro:search:${crypto.createHash('sha1').update(JSON.stringify({ q: q.toLowerCase(), site: siteInfo.domain || siteInfo.raw, identity: identity?.tmdbId || null, fast: !!options.catalogFast })).digest('hex')}`;
     if (!options.noCache) {
@@ -3268,7 +3315,7 @@ class SearchProvider {
       ]);
     }
 
-    const results = [...map.values()]
+    const webRanked = [...map.values()]
       .filter((r) => this.siteMatches(r, siteInfo))
       .map((r) => {
         const fuzzy = searchIdentityScore(q, r, identity);
@@ -3283,14 +3330,29 @@ class SearchProvider {
       .sort((a, b) =>
         Number(this.matchesRequestedTitle(q, b)) - Number(this.matchesRequestedTitle(q, a)) ||
         Number(b.matchScore ?? b.score ?? 0) - Number(a.matchScore ?? a.score ?? 0)
-      )
-      .slice(0, options.catalogFast ? 10 : 30)
+      );
+
+    const merged = [];
+    const seenUrl = new Set();
+    for (const item of [...(identityCandidates || []), ...webRanked]) {
+      const key = String(item.url || '').split('#')[0].toLowerCase();
+      if (!key || seenUrl.has(key)) continue;
+      seenUrl.add(key);
+      merged.push(item);
+    }
+
+    const results = merged
+      .slice(0, options.catalogFast ? 12 : 40)
       .map((r, i) => ({
-        rank: i + 1, name: r.name, title: r.title, url: r.url, pageUrl: r.pageUrl || r.url,
+        rank: i + 1, name: r.name, title: r.title || r.name, url: r.url, pageUrl: r.pageUrl || r.url,
         matchScore: Number(r.matchScore ?? r.score ?? 0), score: r.score, source: r.source,
-        type: r.type, year: r.year, overview: r.overview, imdbId: r.imdbId, tmdbId: r.tmdbId,
-        poster: r.poster, candidateClass: r.candidateClass || 'unknown', resolvedTitle: identity?.title || null,
-        resolvedYear: identity?.year || null, resolvedType: identity?.type || null
+        type: r.type, year: r.year, overview: r.overview,
+        imdbId: r.imdbId || identity?.imdbId || null,
+        tmdbId: r.tmdbId || identity?.tmdbId || null,
+        poster: r.poster, candidateClass: r.candidateClass || 'unknown',
+        resolvedTitle: identity?.title || null,
+        resolvedYear: identity?.year || null, resolvedType: identity?.type || null,
+        discovery: r.discovery || undefined
       }));
     try { await redis.set(cacheKey, JSON.stringify(results), 'PX', SEARCH_CACHE_TTL_MS); } catch (e) {}
     return results;
@@ -3369,7 +3431,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.10.3',
+    version: '4.11.0',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -3531,7 +3593,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.3' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.11.0' } })
 );
 
 
@@ -3549,7 +3611,7 @@ async function processExtractionJob(job) {
         'SEARCH_TIMEOUT'
       );
       const sp = new SearchProvider();
-      const watchCandidates = results.filter((r) => sp.isWatchCandidate(r) && r.candidateClass !== 'info' && (sp.matchesRequestedTitle(job.data.search, r) || Number(r.matchScore ?? 0) >= 0.45) && Number(r.matchScore ?? 0) >= 0.08);
+      const watchCandidates = results.filter((r) => sp.isWatchCandidate(r) && r.candidateClass !== 'info' && (sp.matchesRequestedTitle(job.data.search, r) || r.discovery === 'identity-url' || Number(r.matchScore ?? 0) >= 0.4) && Number(r.matchScore ?? 0) >= 0.08);
       const infoCandidates = results.filter((r) => sp.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info');
       return {
         success: results.length > 0,
@@ -3637,7 +3699,7 @@ async function processExtractionJob(job) {
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
       const watchCandidates = results.filter(
-        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r) || Number(r.matchScore ?? 0) >= 0.4) && Number(r.matchScore ?? 0) >= 0.08 && (searchProvider.isWorkOrWatchUrl(r.url) || /movie|series|episode|watch|embed|فيلم|مسلسل|حلقة|مشاهدة/i.test(`${r.url} ${r.title || ''}`))
+        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
       );
       if (!watchCandidates.length) {
         return {
@@ -3875,13 +3937,13 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.10.3 listening on :' + PORT);
-  console.log('VD-PRO v4.10.3 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.11.0 listening on :' + PORT);
+  console.log('VD-PRO v4.11.0 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.10.3 starting...');
+    logger.info('Vd-Pro v4.11.0 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
