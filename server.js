@@ -2224,7 +2224,7 @@ class VideoExtractor {
         ? 'candidates-unvalidated'
         : 'no-media-requests';
 
-    if (picked && picked.url && picked.validation?.valid) {
+    if (picked && picked.url && picked.validation?.valid && !diagnostics.captchaSuspected && !diagnostics.drmSuspected) {
       result.primaryUrl = picked.url;
       result.success = true;
       result.strategy = diagnostics.strategies.join('+') || 'partial';
@@ -2238,7 +2238,10 @@ class VideoExtractor {
       result.linkMeta = extractLinkMeta(result.primaryUrl, picked.referer || pageUrl);
       result.validated = false;
       result.validationReason = picked.validation?.reason || 'UNVALIDATED';
-      if (diagnostics.drmSuspected || picked.validation?.reason === 'DRM_OR_ENCRYPTED_HLS') {
+      if (diagnostics.captchaSuspected) {
+        result.errorCode = 'BOT_PROTECTION_SUSPECTED';
+        result.error = 'Possible CAPTCHA/bot protection; interactive challenges are not solved automatically';
+      } else if (diagnostics.drmSuspected || picked.validation?.reason === 'DRM_OR_ENCRYPTED_HLS') {
         result.errorCode = 'DRM_PROTECTED';
         result.error = 'Encrypted/DRM media detected; Widevine/FairPlay cannot be decrypted';
       } else if (result.linkMeta?.likelySigned && (result.linkMeta.ttlSeconds === 0 || result.linkMeta.ttlSeconds < 30)) {
@@ -2382,7 +2385,7 @@ async function extractWithFallback(pageUrl, page, proxy, userId, options = {}) {
 
   // Do not retry a page that clearly exposes encrypted media. The fallback
   // extractor is for public HTML/player paths, not DRM or challenge bypass.
-  if (primary?.diagnostics?.drmSuspected) return primary;
+  if (primary?.diagnostics?.drmSuspected || primary?.diagnostics?.captchaSuspected) return primary;
 
   try {
     const fallback = await runFallbackExtraction({
