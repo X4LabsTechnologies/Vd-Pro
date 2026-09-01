@@ -230,7 +230,7 @@ class CacheManager {
     this.max = 80;
   }
   key(url, quality, deep) {
-    return crypto.createHash('sha256').update(String(url) + '::' + String(quality) + '::' + (deep ? 1 : 0)).digest('hex');
+    return crypto.createHash('sha256').update('cache-schema-2::' + String(url) + '::' + String(quality) + '::' + (deep ? 1 : 0)).digest('hex');
   }
   isReusable(data) {
     if (!data || data.success !== true || data.validated !== true || !data.primaryUrl) return false;
