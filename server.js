@@ -3125,7 +3125,11 @@ class SearchProvider {
       `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} watch`,
       `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} مشاهدة`
     ]))];
-    const allPrimaryVariants = [...new Set([...primaryVariants, ...fallbackVariants])].slice(0, SEARCH_MAX_VARIANTS + 8);
+    const allPrimaryVariants = [...new Set([
+      ...primaryVariants.slice(0, 6),
+      ...fallbackVariants,
+      ...primaryVariants.slice(6)
+    ])].slice(0, SEARCH_MAX_VARIANTS);
     const quotedCanonical = `"${String(canonicalTitle).replace(/"/g, ' ')}"`;
     const watchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`.trim();
     const arabicWatchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة`.trim();
