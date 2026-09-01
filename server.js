@@ -2956,26 +2956,24 @@ class SearchProvider {
     sources = sources.slice(0, requested.domain ? 8 : SEARCH_CATALOG_MAX_SOURCES);
 
     const collected = [];
-    // Bounded parallel probing: faster than fully sequential probing while keeping a small
-    // footprint on free/small servers. A successful strong result cancels further rounds.
-    for (let offset = 0; offset < sources.length; offset += CATALOG_CONCURRENCY) {
-      const batch = sources.slice(offset, offset + CATALOG_CONCURRENCY);
-      const settled = await Promise.allSettled(batch.map(async (source) => {
+    // Probe sources in priority order. This avoids spending the full catalog budget
+    // after a high-priority source already produced a strong matching work page.
+    for (const source of sources) {
+      try {
         const direct = await withTimeout(this.searchSourceDirect(identityQuery, source), CATALOG_SOURCE_TIMEOUT_MS + 1500, 'CATALOG_SOURCE_TIMEOUT');
         const items = direct.length
           ? direct
           : await withTimeout(this.searchByName(identityQuery, source.url, { catalogFast: true, identity }), CATALOG_SOURCE_TIMEOUT_MS + 2500, 'CATALOG_SEARCH_TIMEOUT');
-        return items.map((item) => ({
+        collected.push(...items.map((item) => ({
           ...item,
           sourceType: 'catalog', sourceName: source.name, sourceUrl: source.url, catalogCategory: category,
           tmdbId: identity?.tmdbId || item.tmdbId || null, resolvedTitle: identity?.title || null,
           resolvedYear: identity?.year || null, resolvedType: identity?.type || null
-        }));
-      }));
-      for (const result of settled) {
-        if (result.status === 'fulfilled') collected.push(...result.value);
+        })));
+      } catch (error) {
+        logger.debug?.({ source: source.name, error: error.message }, 'Catalog source skipped after bounded failure');
       }
-      const strong = collected.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)) && Number(item.matchScore ?? item.score ?? 0) >= 0.55);
+      const strong = collected.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)) && Number(item.matchScore ?? item.score ?? 0) >= 0.55 && this.isWorkOrWatchUrl(item.url));
       if (strong) break;
     }
     const unique = new Map();
