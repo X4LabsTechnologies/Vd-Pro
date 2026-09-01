@@ -223,6 +223,59 @@ const extractionQueue = new Queue('vd-pro-v44', REDIS_URL, {
   }
 });
 
+class CacheManager {
+  constructor() {
+    this.l1 = new Map();
+    this.max = 80;
+  }
+  key(url, quality, deep) {
+    return crypto.createHash('sha256').update(String(url) + '::' + String(quality) + '::' + (deep ? 1 : 0)).digest('hex');
+  }
+  isReusable(data) {
+    if (!data || data.success !== true || data.validated !== true || !data.primaryUrl) return false;
+    const ttl = data.linkMeta?.ttlSeconds;
+    if (data.linkMeta?.likelySigned && typeof ttl === 'number' && ttl > 0 && ttl < 120) return false;
+    return true;
+  }
+  async get(url, quality = 'auto', deep = false) {
+    const key = this.key(url, quality, deep);
+    const local = this.l1.get(key);
+    if (local) {
+      if (this.isReusable(local)) { metrics.cacheHits.labels('l1').inc(); return local; }
+      this.l1.delete(key);
+    }
+    try {
+      const raw = await redis.get('cache:' + key);
+      if (!raw) return null;
+      const cached = JSON.parse(raw);
+      if (!this.isReusable(cached)) { await redis.del('cache:' + key).catch(() => {}); return null; }
+      this.l1.set(key, cached);
+      metrics.cacheHits.labels('l2').inc();
+      return cached;
+    } catch (e) { return null; }
+  }
+  async set(url, data, quality = 'auto', deep = false) {
+    const key = this.key(url, quality, deep);
+    if (this.l1.size >= this.max) this.l1.delete(this.l1.keys().next().value);
+    this.l1.set(key, data);
+    try { await redis.setex('cache:' + key, 86400, JSON.stringify(data)); } catch (e) {}
+  }
+}
+const cacheManager = new CacheManager();
+
+class SingleFlight {
+  constructor() { this.map = new Map(); }
+  hash(key) { return crypto.createHash('sha256').update(String(key)).digest('hex'); }
+  get(key) { return this.map.get(this.hash(key)); }
+  set(key, promise) {
+    const id = this.hash(key);
+    this.map.set(id, promise);
+    setTimeout(() => this.map.delete(id), 180000).unref?.();
+  }
+  del(key) { if (key) this.map.delete(this.hash(key)); }
+}
+const singleFlight = new SingleFlight();
+
 class SSRFValidator {
   static PRIVATE = [
     /^localhost$/i, /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[01])\./,
