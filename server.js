@@ -206,6 +206,23 @@ const redis = new Redis(REDIS_URL, {
 redis.on('error', (e) => logger.warn({ error: e.message }, 'Redis'));
 redis.on('connect', () => logger.info('Redis connected'));
 
+// Bull queue must be initialized before route workers, watchdog, and WebSocket status handlers use it.
+// Keep the existing queue name so deployed jobs remain compatible with the current Redis namespace.
+const extractionQueue = new Queue('vd-pro-v44', REDIS_URL, {
+  settings: {
+    stalledInterval: 20000,
+    maxStalledCount: 1,
+    lockDuration: JOB_LOCK_MS,
+    lockRenewTime: Math.floor(JOB_LOCK_MS / 3)
+  },
+  defaultJobOptions: {
+    removeOnComplete: 80,
+    removeOnFail: 40,
+    attempts: 2,
+    backoff: { type: 'fixed', delay: 2000 }
+  }
+});
+
 class SSRFValidator {
   static PRIVATE = [
     /^localhost$/i, /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[01])\./,
