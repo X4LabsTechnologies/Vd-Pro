@@ -88,9 +88,11 @@ const SEARCH_MAX_ALIASES = envMs('SEARCH_MAX_ALIASES', 5, 1, 10);
 const SEARCH_MAX_VARIANTS = envMs('SEARCH_MAX_VARIANTS', 18, 4, 36);
 const CDP_NETWORK_CAPTURE = String(process.env.CDP_NETWORK_CAPTURE || 'true').toLowerCase() !== 'false';
 const DEFAULT_SOURCE_DOMAIN_ALIASES = [
-  ['fasel hd', ['https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live']],
-  ['faselhd', ['https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live']],
-  ['egybest', ['https://egybests.live', 'https://egybest.si']]
+  ['fasel hd', ['https://web9118x.faselhdx.life', 'https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live', 'https://www.fasel-hd.cam']],
+  ['faselhd', ['https://web9118x.faselhdx.life', 'https://web83112x.faselhdx.life', 'https://fasselhd.com', 'https://faselhd.live', 'https://www.fasel-hd.cam']],
+  ['egybest', ['https://egybests.live', 'https://egybest.si']],
+  ['akwam', ['https://akwams.org', 'https://akwam.to']],
+  ['1embed', ['https://1embed.cc']]
 ];
 const SOURCE_DOMAIN_ALIASES = String(process.env.SOURCE_DOMAIN_ALIASES || '').split(';').map((entry) => {
   const [name, urls] = entry.split('=').map((part) => part?.trim());
@@ -2835,8 +2837,11 @@ class SearchProvider {
     const descriptor = `${item.url || ''} ${item.title || ''} ${item.name || ''}`.toLowerCase();
     if (this.isInfoCandidate(item.url, item.source, item.title || item.name)) return false;
     if (this.isSourceLandingCandidate(item.url, item.title || item.name)) return false;
-    if (item.source === 'catalog-direct' && item.candidateClass === 'watch') return this.isWorkOrWatchUrl(item.url);
-    if (!this.isWorkOrWatchUrl(item.url)) return false;
+    // Catalog and browser-discovered pages are already scoped to a source host.
+    if (item.source === 'catalog-direct' || item.source === 'catalog-browser' || item.sourceType === 'catalog') {
+      return this.isWorkOrWatchUrl(item.url) || /movie|series|episode|watch|embed|film|مسلسل|فيلم|حلقة|مشاهدة/i.test(descriptor);
+    }
+    if (this.isWorkOrWatchUrl(item.url)) return true;
     return item.candidateClass === 'watch' ||
       /watch|stream|online|episode|season|movie|movies|series|film|play|embed|player|video|\/movies?\/|\/films?\/|مسلسل|فيلم|حلقة|مشاهدة/i.test(descriptor);
   }
@@ -2861,8 +2866,11 @@ class SearchProvider {
     if (numeric.length && numericHits.length !== numeric.length) return false;
     // Prefer strong titleSimilarity in addition to token coverage
     const sim = titleSimilarity(query, `${item.title || ''} ${item.name || ''}`);
-    if (sim >= 0.82 && hits.length >= Math.max(1, Math.ceil(tokens.length * 0.5))) return true;
-    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.55 : tokens.length === 2 ? 0.75 : 1);
+    if (sim >= 0.72 && hits.length >= Math.max(1, Math.ceil(tokens.length * 0.4))) return true;
+    // Slug / path match (common on Arabic streaming mirrors)
+    const pathSim = titleSimilarity(query, String(item.url || '').replace(/[/?#_=-]+/g, ' '));
+    if (pathSim >= 0.7 && hits.length >= 1) return true;
+    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.45 : tokens.length === 2 ? 0.55 : 0.9);
   }
 
   normalizeSiteHint(site = '') {
@@ -2989,9 +2997,12 @@ class SearchProvider {
           `${origin}/?s=${q}`,
           `${origin}/search?q=${q}`,
           `${origin}/search?query=${q}`,
+          `${origin}/search/${q}`,
           `${origin}/page/movies/?s=${q}`,
           `${origin}/page/series/?s=${q}`,
           `${origin}/page/anime/?s=${q}`,
+          `${origin}/movies?search=${q}`,
+          `${origin}/series?search=${q}`,
           `${origin}/wp-json/wp/v2/search?search=${q}&per_page=20`,
           `${origin}/wp-json/wp/v2/posts?search=${q}&per_page=20`,
           `${origin}/feed/?s=${q}`,
@@ -3011,7 +3022,7 @@ class SearchProvider {
         const pathname = parsed.pathname.split('/').filter(Boolean).pop() || '';
         const identifierMatch = titleSimilarity(query, pathname.replace(/[-_]+/g, ' '));
         const contentMatch = Math.max(exactTitle, identifierMatch);
-        if (contentMatch < 0.12) return;
+        if (contentMatch < 0.08) return;
         const score = exactTitle >= 0.99 ? 1.25 : contentMatch + 0.2;
         const key = url.toLowerCase();
         if (!out.has(key) || score > out.get(key).score) out.set(key, {
@@ -3163,7 +3174,7 @@ class SearchProvider {
       } catch (error) {
         logger.debug?.({ source: source.name, error: error.message }, 'Catalog source skipped after bounded failure');
       }
-      const strong = collected.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)) && Number(item.matchScore ?? item.score ?? 0) >= 0.55 && this.isWorkOrWatchUrl(item.url));
+      const strong = collected.some((item) => this.isWatchCandidate(item) && matchQueries.some((q) => this.matchesRequestedTitle(q, item)) && Number(item.matchScore ?? item.score ?? 0) >= 0.28 && this.isWorkOrWatchUrl(item.url));
       if (strong) break;
     }
     const unique = new Map();
@@ -3189,29 +3200,36 @@ class SearchProvider {
     const identitySuffix = identity?.year ? ` ${identity.year}` : '';
     const typeSuffix = identity?.type === 'series' ? ' series tv' : identity?.type === 'movie' ? ' movie film' : '';
     const aliases = [...new Set([q, canonicalTitle, ...(identity?.aliases || [])].filter(Boolean))].slice(0, SEARCH_MAX_ALIASES + 1);
-    const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : siteInfo.raw ? `${siteInfo.raw} ` : '';
-    const build = (term, intent = '') => {
+    // site: operator often returns zero hits for mirror domains. Prefer open
+    // web queries, then filter with siteMatches(). Keep one scoped variant only.
+    const scoped = siteInfo.domain ? `site:${siteInfo.domain} ` : '';
+    const hostHint = siteInfo.domain || siteInfo.raw || '';
+    const build = (term, intent = '', useSite = false) => {
       const quoted = `"${String(term).replace(/"/g, ' ')}"`;
-      return `${scoped}${quoted}${identitySuffix}${typeSuffix}${intent ? ` ${intent}` : ''}`.trim();
+      const prefix = useSite && scoped ? scoped : (hostHint && !useSite ? `${hostHint} ` : '');
+      return `${prefix}${quoted}${identitySuffix}${typeSuffix}${intent ? ` ${intent}` : ''}`.trim();
     };
     const primaryVariants = [...new Set(aliases.flatMap((term) => [
-      build(term), build(term, 'watch'), build(term, 'video'), build(term, 'episode'), build(term, 'مشاهدة')
+      build(term, 'مشاهدة'),
+      build(term, 'watch'),
+      build(term, 'فيلم'),
+      build(term, 'مسلسل'),
+      build(term, 'episode'),
+      build(term, '', true)
     ]))].slice(0, SEARCH_MAX_VARIANTS);
-    // Quoted searches improve precision but often hide Arabic titles,
-    // transliterations, and sites with noisy metadata. Keep a small
-    // unquoted fallback set for recall.
     const fallbackVariants = [...new Set(aliases.slice(0, 4).flatMap((term) => [
-      `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} watch`,
-      `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} مشاهدة`
-    ]))];
+      `${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} watch online`,
+      `${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} مشاهدة مترجم`,
+      hostHint ? `${hostHint} ${String(term).replace(/"/g, ' ')}` : null
+    ].filter(Boolean)))];
     const allPrimaryVariants = [...new Set([
-      ...primaryVariants.slice(0, 6),
+      ...primaryVariants.slice(0, 8),
       ...fallbackVariants,
-      ...primaryVariants.slice(6)
+      ...primaryVariants.slice(8)
     ])].slice(0, SEARCH_MAX_VARIANTS);
     const quotedCanonical = `"${String(canonicalTitle).replace(/"/g, ' ')}"`;
-    const watchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`.trim();
-    const arabicWatchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة`.trim();
+    const watchQuery = `${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`.trim();
+    const arabicWatchQuery = `${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة مترجم`.trim();
 
     const cacheKey = `vdpro:search:${crypto.createHash('sha1').update(JSON.stringify({ q: q.toLowerCase(), site: siteInfo.domain || siteInfo.raw, identity: identity?.tmdbId || null, fast: !!options.catalogFast })).digest('hex')}`;
     if (!options.noCache) {
@@ -3531,7 +3549,7 @@ async function processExtractionJob(job) {
         'SEARCH_TIMEOUT'
       );
       const sp = new SearchProvider();
-      const watchCandidates = results.filter((r) => sp.isWatchCandidate(r) && r.candidateClass !== 'info' && sp.matchesRequestedTitle(job.data.search, r) && Number(r.matchScore ?? 0) >= 0.12);
+      const watchCandidates = results.filter((r) => sp.isWatchCandidate(r) && r.candidateClass !== 'info' && (sp.matchesRequestedTitle(job.data.search, r) || Number(r.matchScore ?? 0) >= 0.45) && Number(r.matchScore ?? 0) >= 0.08);
       const infoCandidates = results.filter((r) => sp.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info');
       return {
         success: results.length > 0,
@@ -3619,7 +3637,7 @@ async function processExtractionJob(job) {
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
       const watchCandidates = results.filter(
-        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
+        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r) || Number(r.matchScore ?? 0) >= 0.4) && Number(r.matchScore ?? 0) >= 0.08 && (searchProvider.isWorkOrWatchUrl(r.url) || /movie|series|episode|watch|embed|فيلم|مسلسل|حلقة|مشاهدة/i.test(`${r.url} ${r.title || ''}`))
       );
       if (!watchCandidates.length) {
         return {
