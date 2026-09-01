@@ -3089,6 +3089,245 @@ class SearchProvider {
     return results;
   }}
 
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+if (ALLOWED_ORIGINS.length) {
+  app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
+} else if (NODE_ENV === 'production') {
+  app.use(cors({ origin: false }));
+} else {
+  app.use(cors());
+}
+app.use(express.json({ limit: '1mb' }));
+
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  res.on('finish', () => {
+    try {
+      metrics.httpDuration
+        .labels(req.method, req.route?.path || req.path, res.statusCode)
+        .observe((Date.now() - t0) / 1000);
+    } catch (e) {}
+  });
+  next();
+});
+
+const verifyToken = async (req, res, next) => {
+  try {
+    const auth = String(req.headers.authorization || '');
+    if (!/^Bearer\s+\S+$/i.test(auth)) return res.status(401).json({ success: false, error: 'No token', code: 'NO_TOKEN' });
+    const token = auth.replace(/^Bearer\s+/i, '').trim();
+    const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
+    if (db) {
+      const user = await db.collection('users').findOne({ apiKey: decoded.apiKey });
+      if (!user) return res.status(403).json({ success: false, error: 'User not found', code: 'USER_NOT_FOUND' });
+      req.user = user;
+    } else {
+      req.user = { _id: decoded.apiKey, plan: 'free', apiKey: decoded.apiKey };
+    }
+    next();
+  } catch (e) {
+    return res.status(403).json({ success: false, error: 'Invalid token', code: 'INVALID_TOKEN' });
+  }
+};
+
+function rateLimitKey(req) {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (token) {
+      const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
+      if (decoded?.apiKey) return 'u:' + decoded.apiKey;
+    }
+  } catch (e) {}
+  const id = req.user?._id?.toString?.() || req.user?._id;
+  if (id) return 'u:' + id;
+  return 'ip:' + (req.ip || 'unknown');
+}
+
+app.use(
+  '/api/v1/',
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.path === '/health' || req.path === '/api/v1/health',
+    keyGenerator: rateLimitKey
+  })
+);
+
+app.get('/api/v1/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    ready: startupReady,
+    startupError: startupError ? 'STARTUP_DEGRADED' : null,
+    name: 'Vd-Pro',
+    version: '4.10.2',
+    redis: redis.status,
+    mongodb: db ? 'connected' : 'disconnected',
+    limits: {
+      hardExtractMs: HARD_EXTRACT_MS,
+      navTimeoutMs: NAV_TIMEOUT_MS,
+      jobProcessTimeoutMs: JOB_PROCESS_TIMEOUT_MS
+    },
+    searchProviders: {
+      ddgApi: true,
+      wikipedia: true,
+      tmdb: !!TMDB_API_KEY,
+      omdbImdb: !!OMDB_API_KEY,
+      braveApi: !!BRAVE_SEARCH_API_KEY
+    },
+    proxy: { configured: PROXIES.length > 0, count: PROXIES.length, checked: proxyManager.proxies.filter((p) => p.health.checked).length, available: proxyManager.proxies.filter((p) => p.health.available).length },
+    mediaFlow: { configured: isMediaFlowProxyConfigured() },
+    notes: {
+      drm: 'Detected and reported; not decrypted',
+      captcha: 'Detected and reported; not solved',
+      signedUrls: 'TTL/referer via linkMeta when possible'
+    },
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.post('/api/v1/auth/register', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ success: false, error: 'Missing fields' });
+    const normalized = String(email).trim().toLowerCase();
+    if (normalized.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return res.status(400).json({ success: false, error: 'Invalid email' });
+    if (String(password).length < 8 || String(password).length > 256) return res.status(400).json({ success: false, error: 'Weak password' });
+    if (!db) return res.status(503).json({ success: false, error: 'DB unavailable' });
+    if (await db.collection('users').findOne({ email: normalized })) {
+      return res.status(400).json({ success: false, error: 'Email exists' });
+    }
+    const apiKey = crypto.randomBytes(32).toString('hex');
+    await db.collection('users').insertOne({
+      email: normalized,
+      password: await bcrypt.hash(password, 12),
+      apiKey,
+      plan: 'free',
+      createdAt: new Date()
+    });
+    const token = jwt.sign({ apiKey }, EFFECTIVE_JWT_SECRET, { expiresIn: '30d' });
+    res.status(201).json({ success: true, apiKey, token, plan: 'free' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: 'Register failed' });
+  }
+});
+
+app.get('/api/v1/extract', verifyToken, async (req, res) => {
+  try {
+    const { url, quality = 'auto', deep } = req.query;
+    if (!url) return res.status(400).json({ success: false, error: 'URL required', code: 'MISSING_URL' });
+    const v = await SSRFValidator.validate(url);
+    if (!v.valid) return res.status(400).json({ success: false, error: v.reason, code: 'INVALID_URL' });
+    const deepFlag = deep === '1' || deep === 'true';
+    const cached = await cacheManager.get(url, quality, deepFlag);
+    if (cached) return res.json({ success: true, fromCache: true, ...applyMediaFlowProxy(cached) });
+    const flightKey = 'ex:' + url + '::' + quality + '::' + (deepFlag ? 1 : 0);
+    if (singleFlight.get(flightKey)) return res.status(202).json({ success: true, message: 'Processing', dedup: true });
+    const userId = req.user._id?.toString?.() || String(req.user._id);
+    const job = await withTimeout(
+      extractionQueue.add(
+        { type: 'extract', url, userId, quality, deep: deepFlag },
+        { timeout: HARD_EXTRACT_MS + 20000, attempts: 2 }
+      ),
+      10000,
+      'QUEUE_ADD_TIMEOUT'
+    );
+    singleFlight.set(flightKey, job.finished().catch(() => null));
+    res.status(202).json({ success: true, jobId: job.id, statusUrl: '/api/v1/jobs/' + job.id });
+  } catch (e) {
+    logger.error({ error: e.message }, 'Extraction request failed');
+    res.status(/QUEUE|Redis|connection|timeout/i.test(String(e.message || '')) ? 503 : 500).json({ success: false, error: 'Extraction request failed', code: 'EXTRACTION_REQUEST_ERROR' });
+  }
+});
+
+app.get('/api/v1/search', verifyToken, async (req, res) => {
+  try {
+      const { q, site = '', category = '', extract, quality = 'auto', deep } = req.query;
+    if (!q || !String(q).trim()) return res.status(400).json({ success: false, error: 'q required' });
+    if (String(q).length > 300) return res.status(400).json({ success: false, error: 'q too long', code: 'QUERY_TOO_LONG' });
+    const userId = req.user._id?.toString?.() || String(req.user._id);
+    // A named source search is an extraction request by default: discover the
+    // matching work page, probe it, then return the first validated stream.
+    // Search-only behavior remains available explicitly with extract=0/false.
+    const doExtract = extract === undefined
+      ? Boolean(String(site || '').trim())
+      : extract === '1' || extract === 'true';
+    const job = await withTimeout(
+      extractionQueue.add(
+        {
+          type: doExtract ? 'search_extract' : 'search',
+          search: String(q).trim(),
+          site: String(site || '').trim(),
+          category: String(category || '').trim(),
+          userId,
+          quality,
+          deep: deep === '1' || deep === 'true'
+        },
+        { timeout: doExtract ? HARD_EXTRACT_MS + 30000 : HARD_SEARCH_MS + 10000, attempts: 2 }
+      ),
+      10000,
+      'QUEUE_ADD_TIMEOUT'
+    );
+    res.status(202).json({
+      success: true,
+      jobId: job.id,
+      query: String(q).trim(),
+      ...(site ? { site: String(site).trim() } : {}),
+      ...(category ? { category: String(category).trim() } : {}),
+      mode: doExtract ? 'search_and_extract' : 'search_only',
+      statusUrl: '/api/v1/jobs/' + job.id
+    });
+  } catch (e) {
+    logger.error({ error: e.message }, 'Search request failed');
+    res.status(/QUEUE|Redis|connection|timeout/i.test(String(e.message || '')) ? 503 : 500).json({ success: false, error: 'Search request failed', code: 'SEARCH_REQUEST_ERROR' });
+  }
+});
+
+app.get('/api/v1/jobs/:jobId', verifyToken, async (req, res) => {
+  try {
+    const job = await withTimeout(extractionQueue.getJob(req.params.jobId), 8000, 'QUEUE_STATUS_TIMEOUT');
+    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+    const userId = req.user._id?.toString?.() || String(req.user._id);
+    if (job.data && job.data.userId && String(job.data.userId) !== userId) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+    const state = await job.getState();
+    let result = null;
+    if (state === 'completed') {
+      result = job.returnvalue != null ? job.returnvalue : job._returnvalue != null ? job._returnvalue : null;
+    }
+    res.json({
+      success: true,
+      jobId: job.id,
+      state,
+      result,
+      attemptsMade: job.attemptsMade || 0,
+      failedReason: state === 'failed' ? job.failedReason || null : null
+    });
+  } catch (e) {
+    const queueError = /QUEUE_(?:ADD|STATUS)_TIMEOUT|Redis|connection|timeout/i.test(String(e.message || ''));
+    res.status(queueError ? 503 : 500).json({
+      success: false,
+      error: queueError ? 'Queue unavailable' : e.message,
+      code: queueError ? 'QUEUE_UNAVAILABLE' : 'JOB_STATUS_ERROR'
+    });
+  }
+});
+
+app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
+  res.json({ success: true, proxies: proxyManager.status() });
+});
+
+app.use(
+  '/api-docs',
+  swaggerUi.serve,
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.2' } })
+);
+
+
 async function processExtractionJob(job) {
   const jobStartedAt = Date.now();
   let ctx = null;
