@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "User-managed source catalog. The extractor logic is shared across all sources.",
+  "version": 3,
+  "description": "User-managed source catalog. Order matches operator list. Extractor logic is shared across all sources.",
   "movies_series": [
     {
       "name": "1337x",
@@ -93,160 +93,490 @@
       "priority": 150
     },
     {
-      "name": "YesMovies",
-      "url": "https://yesmovies.ag",
+      "name": "OxTorrent",
+      "url": "https://oxtorrent.vg",
       "enabled": true,
       "priority": 160
+    },
+    {
+      "name": "Kickass Torrents",
+      "url": "https://kat.rip",
+      "enabled": true,
+      "priority": 170
+    },
+    {
+      "name": "123Movies",
+      "url": "https://123movies.to",
+      "enabled": true,
+      "priority": 180
     },
     {
       "name": "FMovies",
       "url": "https://fmovies.to",
       "enabled": true,
-      "priority": 170
+      "priority": 190
     },
     {
       "name": "SolarMovie",
       "url": "https://solarmovie.pe",
       "enabled": true,
-      "priority": 180
-    },
-    {
-      "name": "GoMovies",
-      "url": "https://gomovies.to",
-      "enabled": true,
-      "priority": 190
-    },
-    {
-      "name": "VexMovies",
-      "url": "https://vexmovies.one",
-      "enabled": true,
       "priority": 200
+    },
+    {
+      "name": "YesMovies",
+      "url": "https://yesmovies.ag",
+      "enabled": true,
+      "priority": 210
     },
     {
       "name": "Putlocker",
       "url": "https://putlocker.to",
       "enabled": true,
-      "priority": 210
+      "priority": 220
+    },
+    {
+      "name": "GoMovies",
+      "url": "https://gomovies.to",
+      "enabled": true,
+      "priority": 230
+    },
+    {
+      "name": "VexMovies",
+      "url": "https://vexmovies.one",
+      "enabled": true,
+      "priority": 240
+    },
+    {
+      "name": "PrimeWire",
+      "url": "https://primewire.li",
+      "enabled": true,
+      "priority": 250
+    },
+    {
+      "name": "Cineb",
+      "url": "https://cineb.net",
+      "enabled": true,
+      "priority": 260
+    },
+    {
+      "name": "Vumoo",
+      "url": "https://vumoo.to",
+      "enabled": true,
+      "priority": 270
+    },
+    {
+      "name": "WatchSeries",
+      "url": "https://watchseries.bar",
+      "enabled": true,
+      "priority": 280
+    },
+    {
+      "name": "Popcornflix",
+      "url": "https://popcornflix.com",
+      "enabled": true,
+      "priority": 290
+    },
+    {
+      "name": "BMovies",
+      "url": "https://bmovies.co",
+      "enabled": true,
+      "priority": 300
+    },
+    {
+      "name": "4Movies",
+      "url": "https://4movies.to",
+      "enabled": true,
+      "priority": 310
+    },
+    {
+      "name": "StreamWoop",
+      "url": "https://streamwoop.com",
+      "enabled": true,
+      "priority": 320
+    },
+    {
+      "name": "CouchTuner",
+      "url": "https://couchtuner.bz",
+      "enabled": true,
+      "priority": 330
+    },
+    {
+      "name": "456Movies",
+      "url": "https://456movies.com",
+      "enabled": true,
+      "priority": 340
+    },
+    {
+      "name": "123Movies Fun",
+      "url": "https://123movies.fun",
+      "enabled": true,
+      "priority": 350
+    },
+    {
+      "name": "M4uFree",
+      "url": "https://m4ufree.tv",
+      "enabled": true,
+      "priority": 360
+    },
+    {
+      "name": "Vidsrc",
+      "url": "https://vidsrc.to",
+      "enabled": true,
+      "priority": 370
+    },
+    {
+      "name": "Vidsrc.pm",
+      "url": "https://vidsrc.pm",
+      "enabled": true,
+      "priority": 380
+    },
+    {
+      "name": "Vidsrc.me",
+      "url": "https://vidsrc.me",
+      "enabled": true,
+      "priority": 390
+    },
+    {
+      "name": "Vidsrc.in",
+      "url": "https://vidsrc.in",
+      "enabled": true,
+      "priority": 400
+    },
+    {
+      "name": "VidLink",
+      "url": "https://vidlink.pro",
+      "enabled": true,
+      "priority": 410
+    },
+    {
+      "name": "AutoEmbed",
+      "url": "https://autoembed.co",
+      "enabled": true,
+      "priority": 420
+    },
+    {
+      "name": "2Embed",
+      "url": "https://2embed.cc",
+      "enabled": true,
+      "priority": 430
+    },
+    {
+      "name": "1Embed",
+      "url": "https://1embed.cc",
+      "enabled": true,
+      "priority": 440
+    },
+    {
+      "name": "VidCore",
+      "url": "https://vidcore.org",
+      "enabled": true,
+      "priority": 450
+    },
+    {
+      "name": "VidSpark",
+      "url": "https://vidspark.to",
+      "enabled": true,
+      "priority": 460
+    },
+    {
+      "name": "VidNest",
+      "url": "https://vidnest.fun",
+      "enabled": true,
+      "priority": 470
+    },
+    {
+      "name": "VidKing",
+      "url": "https://vidking.net",
+      "enabled": true,
+      "priority": 480
+    },
+    {
+      "name": "VidRock",
+      "url": "https://vidrock.net",
+      "enabled": true,
+      "priority": 490
+    },
+    {
+      "name": "PrimeSrc",
+      "url": "https://primesrc.me",
+      "enabled": true,
+      "priority": 500
+    },
+    {
+      "name": "CineSrc",
+      "url": "https://cinesrc.st",
+      "enabled": true,
+      "priority": 510
+    },
+    {
+      "name": "Peachify",
+      "url": "https://peachify.pro",
+      "enabled": true,
+      "priority": 520
+    },
+    {
+      "name": "FilmU",
+      "url": "https://filmu.in",
+      "enabled": true,
+      "priority": 530
+    },
+    {
+      "name": "VidZen",
+      "url": "https://vidzen.fun",
+      "enabled": true,
+      "priority": 540
+    },
+    {
+      "name": "111Movies",
+      "url": "https://111movies.net",
+      "enabled": true,
+      "priority": 550
+    },
+    {
+      "name": "MoviesAPI",
+      "url": "https://moviesapi.to",
+      "enabled": true,
+      "priority": 560
+    },
+    {
+      "name": "SmashyStream",
+      "url": "https://smashystream.com",
+      "enabled": true,
+      "priority": 570
+    },
+    {
+      "name": "Vidzee",
+      "url": "https://vidzee.wtf",
+      "enabled": true,
+      "priority": 580
+    },
+    {
+      "name": "Videasy",
+      "url": "https://videasy.to",
+      "enabled": true,
+      "priority": 590
+    },
+    {
+      "name": "Afdah",
+      "url": "https://afdah.bar",
+      "enabled": true,
+      "priority": 600
     },
     {
       "name": "FaselHD",
       "url": "https://faselhd.com",
       "enabled": true,
-      "priority": 220
+      "priority": 610
     },
     {
       "name": "Akwam",
       "url": "https://akwam.to",
       "enabled": true,
-      "priority": 230
+      "priority": 620
     },
     {
       "name": "EgyBest",
       "url": "https://egybest.si",
       "enabled": true,
-      "priority": 240
+      "priority": 630
     },
     {
       "name": "MyCima",
       "url": "https://mycima.link",
       "enabled": true,
-      "priority": 250
+      "priority": 640
     },
     {
       "name": "Cima4U",
       "url": "https://cima4u.news",
       "enabled": true,
-      "priority": 260
+      "priority": 650
     },
     {
       "name": "Shahid4u",
       "url": "https://shahid4u.com",
       "enabled": true,
-      "priority": 270
+      "priority": 660
     },
     {
       "name": "Movizland",
       "url": "https://movizland.to",
       "enabled": true,
-      "priority": 280
+      "priority": 670
     },
     {
       "name": "Fushaar",
       "url": "https://fushaar.video",
       "enabled": true,
-      "priority": 290
+      "priority": 680
     },
     {
       "name": "CimaNow",
       "url": "https://cimanow.tv",
       "enabled": true,
-      "priority": 300
+      "priority": 690
     },
     {
-      "name": "Tubi",
-      "url": "https://tubitv.com",
+      "name": "CimaClub",
+      "url": "https://cimaclub.com",
       "enabled": true,
-      "priority": 310
+      "priority": 700
     },
     {
-      "name": "Pluto TV",
-      "url": "https://pluto.tv",
+      "name": "AflamOnline",
+      "url": "https://aflamonline.com",
       "enabled": true,
-      "priority": 320
+      "priority": 710
     },
     {
-      "name": "Plex",
-      "url": "https://plex.tv",
+      "name": "Moshahda",
+      "url": "https://moshahda.net",
       "enabled": true,
-      "priority": 330
+      "priority": 720
     },
     {
-      "name": "The Roku Channel",
-      "url": "https://therokuchannel.roku.com",
+      "name": "Lamsat",
+      "url": "https://lamsat.info",
       "enabled": true,
-      "priority": 340
+      "priority": 730
     },
     {
-      "name": "Sling Freestream",
-      "url": "https://sling.com/freestream",
+      "name": "Kawaliss",
+      "url": "https://kawaliss.com",
       "enabled": true,
-      "priority": 350
+      "priority": 740
     },
     {
-      "name": "Internet Archive",
-      "url": "https://archive.org",
+      "name": "ReelFlix",
+      "url": "https://reelflix.xyz",
       "enabled": true,
-      "priority": 360
+      "priority": 750
     },
     {
-      "name": "Crackle",
-      "url": "https://crackle.com",
+      "name": "StreamFlix",
+      "url": "https://streamflix.to",
       "enabled": true,
-      "priority": 370
+      "priority": 760
     },
     {
-      "name": "Vudu Free",
-      "url": "https://www.vudu.com",
+      "name": "ShowBox",
+      "url": "https://showbox.media",
       "enabled": true,
-      "priority": 380
+      "priority": 770
     },
     {
-      "name": "Peacock TV Free",
-      "url": "https://www.peacocktv.com",
+      "name": "MovieStars",
+      "url": "https://moviestars.to",
       "enabled": true,
-      "priority": 390
+      "priority": 780
     },
     {
-      "name": "Rakuten TV",
-      "url": "https://rakuten.tv",
+      "name": "FilmPal",
+      "url": "https://filmpal.to",
       "enabled": true,
-      "priority": 400
+      "priority": 790
     },
     {
-      "name": "Red Bull TV",
-      "url": "https://www.redbull.tv",
+      "name": "CinemaHD",
+      "url": "https://cinemahd.io",
       "enabled": true,
-      "priority": 410
+      "priority": 800
+    },
+    {
+      "name": "TeaTV",
+      "url": "https://teatv.net",
+      "enabled": true,
+      "priority": 810
+    },
+    {
+      "name": "CyberFlix",
+      "url": "https://cyberflix.tv",
+      "enabled": true,
+      "priority": 820
+    },
+    {
+      "name": "BeeTV",
+      "url": "https://beetv.app",
+      "enabled": true,
+      "priority": 830
+    },
+    {
+      "name": "TitanTV",
+      "url": "https://titantv.to",
+      "enabled": true,
+      "priority": 840
+    },
+    {
+      "name": "NovaTV",
+      "url": "https://novatv.to",
+      "enabled": true,
+      "priority": 850
+    },
+    {
+      "name": "HDRezka",
+      "url": "https://hdrezka.ag",
+      "enabled": true,
+      "priority": 860
+    },
+    {
+      "name": "Kinogo",
+      "url": "https://kinogo.one",
+      "enabled": true,
+      "priority": 870
+    },
+    {
+      "name": "Baskino",
+      "url": "https://baskinio.xyz",
+      "enabled": true,
+      "priority": 880
+    },
+    {
+      "name": "LordFilm",
+      "url": "https://lordfilm.cafe",
+      "enabled": true,
+      "priority": 890
+    },
+    {
+      "name": "ZFilm",
+      "url": "https://zfilm-hd.net",
+      "enabled": true,
+      "priority": 900
+    },
+    {
+      "name": "KinoKrad",
+      "url": "https://kinokrad.me",
+      "enabled": true,
+      "priority": 910
+    },
+    {
+      "name": "SeasonVar",
+      "url": "https://seasonvar.ru",
+      "enabled": true,
+      "priority": 920
+    },
+    {
+      "name": "LostFilm",
+      "url": "https://lostfilm.tv",
+      "enabled": true,
+      "priority": 930
+    },
+    {
+      "name": "HDserials",
+      "url": "https://hdserials.cc",
+      "enabled": true,
+      "priority": 940
+    },
+    {
+      "name": "Filmix",
+      "url": "https://filmix.co",
+      "enabled": true,
+      "priority": 950
+    },
+    {
+      "name": "Kinovol",
+      "url": "https://kinovol.com",
+      "enabled": true,
+      "priority": 960
     }
   ],
   "anime": [
@@ -263,26 +593,26 @@
       "priority": 20
     },
     {
-      "name": "Anime4up",
-      "url": "https://anime4up.com",
+      "name": "9anime",
+      "url": "https://9anime.to",
       "enabled": true,
       "priority": 30
     },
     {
-      "name": "AnimeBlkom",
-      "url": "https://animeblkom.com",
+      "name": "Aniwatch",
+      "url": "https://aniwatch.to",
       "enabled": true,
       "priority": 40
     },
     {
-      "name": "Animeiat",
-      "url": "https://animeiat.tv",
+      "name": "Gogoanime",
+      "url": "https://gogoanime3.cc",
       "enabled": true,
       "priority": 50
     },
     {
-      "name": "GateAnime",
-      "url": "https://gateanime.com",
+      "name": "Anitaku",
+      "url": "https://anitaku.to",
       "enabled": true,
       "priority": 60
     },
@@ -293,32 +623,32 @@
       "priority": 70
     },
     {
-      "name": "9anime",
-      "url": "https://9anime.to",
+      "name": "AnimeSuge",
+      "url": "https://animesuge.to",
       "enabled": true,
       "priority": 80
     },
     {
-      "name": "Gogoanime",
-      "url": "https://gogoanime3.cc",
+      "name": "Anime4up",
+      "url": "https://anime4up.com",
       "enabled": true,
       "priority": 90
     },
     {
-      "name": "Aniwatch",
-      "url": "https://aniwatch.to",
+      "name": "AnimeBlkom",
+      "url": "https://animeblkom.com",
       "enabled": true,
       "priority": 100
     },
     {
-      "name": "AnimeSuge",
-      "url": "https://animesuge.to",
+      "name": "Animeiat",
+      "url": "https://animeiat.tv",
       "enabled": true,
       "priority": 110
     },
     {
-      "name": "Anitaku",
-      "url": "https://anitaku.to",
+      "name": "GateAnime",
+      "url": "https://gateanime.com",
       "enabled": true,
       "priority": 120
     },
@@ -467,22 +797,28 @@
       "priority": 360
     },
     {
+      "name": "Anime-Planet",
+      "url": "https://anime-planet.com",
+      "enabled": true,
+      "priority": 370
+    },
+    {
       "name": "Soul-Anime",
       "url": "https://soul-anime.tv",
       "enabled": true,
-      "priority": 370
+      "priority": 380
     },
     {
       "name": "AnimeRush",
       "url": "https://animerush.tv",
       "enabled": true,
-      "priority": 380
+      "priority": 390
     },
     {
       "name": "WatchAnime",
       "url": "https://watchanime.xyz",
       "enabled": true,
-      "priority": 390
+      "priority": 400
     }
   ],
   "additional_sites": [
@@ -545,6 +881,54 @@
       "url": "https://kinozal.tv",
       "enabled": true,
       "priority": 100
+    },
+    {
+      "name": "Megapeer",
+      "url": "https://megapeer.org",
+      "enabled": true,
+      "priority": 110
+    },
+    {
+      "name": "Torrents.csv",
+      "url": "https://torrents.csv",
+      "enabled": true,
+      "priority": 120
+    },
+    {
+      "name": "ETTV",
+      "url": "https://ettv.tv",
+      "enabled": true,
+      "priority": 130
+    },
+    {
+      "name": "TVChaosUK",
+      "url": "https://tvchaosuk.com",
+      "enabled": true,
+      "priority": 140
+    },
+    {
+      "name": "SceneAccess",
+      "url": "https://sceneaccess.eu",
+      "enabled": true,
+      "priority": 150
+    },
+    {
+      "name": "GFT",
+      "url": "https://gftracker.org",
+      "enabled": true,
+      "priority": 160
+    },
+    {
+      "name": "FileList",
+      "url": "https://filelist.io",
+      "enabled": true,
+      "priority": 170
+    },
+    {
+      "name": "XSpeeds",
+      "url": "https://xspeedz.eu",
+      "enabled": true,
+      "priority": 180
     }
   ]
 }
