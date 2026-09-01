@@ -1534,6 +1534,25 @@ class ResultValidator {
   }
 }
 
+function classifyExtractionFailure(result = {}, error = null) {
+  const diagnostics = { ...(result?.diagnostics || {}) };
+  const code = String(error?.code || result?.errorCode || '').toUpperCase();
+  const message = String(error?.message || result?.error || '').toLowerCase();
+  let failureClass = 'extraction-error';
+  if (code.includes('TIMEOUT') || message.includes('timeout')) failureClass = 'timeout';
+  else if (code.includes('DRM') || message.includes('drm') || message.includes('encrypted')) failureClass = 'drm-protected';
+  else if (code.includes('CAPTCHA') || code.includes('BOT') || message.includes('captcha') || message.includes('cloudflare')) failureClass = 'bot-protection';
+  else if (code.includes('NO_STREAM') || code.includes('UNPLAYABLE') || message.includes('no video') || message.includes('no stream')) failureClass = 'no-media';
+  else if (code.includes('BROWSER') || message.includes('browser') || message.includes('page')) failureClass = 'browser-error';
+  else if (/econn|enotfound|network|socket|connect/i.test(`${code} ${message}`)) failureClass = 'network-error';
+  diagnostics.failureClass = failureClass;
+  diagnostics.errorCode = result?.errorCode || error?.code || null;
+  diagnostics.timedOut = diagnostics.timedOut || failureClass === 'timeout';
+  diagnostics.captchaSuspected = diagnostics.captchaSuspected || failureClass === 'bot-protection';
+  diagnostics.drmSuspected = diagnostics.drmSuspected || failureClass === 'drm-protected';
+  return diagnostics;
+}
+
 class VideoExtractor {
   constructor() {
     this.name = 'vd-pro';
