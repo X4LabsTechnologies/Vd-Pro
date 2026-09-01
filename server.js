@@ -30,6 +30,7 @@ import { WebSocketServer } from 'ws';
 import * as prometheus from 'prom-client';
 import { URL as URLParser } from 'url';
 import dns from 'dns/promises';
+import net from 'net';
 import bcrypt from 'bcrypt';
 import fs from 'fs';
 import path from 'path';
@@ -286,7 +287,31 @@ class SSRFValidator {
   static isPrivate(host) {
     if (!host) return true;
     const h = String(host).toLowerCase().replace(/^\[|\]$/g, '');
-    return this.PRIVATE.some((p) => p.test(h));
+    if (this.PRIVATE.some((p) => p.test(h))) return true;
+    const mappedIpv4 = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)?.[1];
+    const ipv4 = mappedIpv4 || (net.isIP(h) === 4 ? h : null);
+    if (ipv4) {
+      const octets = ipv4.split('.').map((part) => Number(part));
+      if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+      const [a, b] = octets;
+      return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+        (a === 100 && b >= 64 && b <= 127);
+    }
+    if (net.isIP(h) === 6) {
+      return h === '::1' || /^::ffff:127\./i.test(h) || /^(?:fc|fd|fe8|fe9|fea|feb|ff)/i.test(h);
+    }
+    return false;
+  }
+  static async validateHost(hostname) {
+    if (this.isPrivate(hostname)) return { valid: false, reason: 'Private host blocked' };
+    try {
+      const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+      if (addresses.some(({ address }) => this.isPrivate(address))) return { valid: false, reason: 'Private resolved address' };
+    } catch (e) {
+      return { valid: false, reason: 'Host resolution failed' };
+    }
+    return { valid: true };
   }
   static async validate(urlString) {
     try {
@@ -294,18 +319,7 @@ class SSRFValidator {
       if (urlString.length > 2048) return { valid: false, reason: 'URL too long' };
       const url = new URLParser(urlString);
       if (!['http:', 'https:'].includes(url.protocol)) return { valid: false, reason: 'Invalid protocol' };
-      if (this.isPrivate(url.hostname)) return { valid: false, reason: 'Private host blocked' };
-      try {
-        for (const a of await dns.resolve4(url.hostname)) {
-          if (this.isPrivate(a)) return { valid: false, reason: 'Private IPv4' };
-        }
-      } catch (e) {}
-      try {
-        for (const a of await dns.resolve6(url.hostname)) {
-          if (this.isPrivate(a)) return { valid: false, reason: 'Private IPv6' };
-        }
-      } catch (e) {}
-      return { valid: true };
+      return await this.validateHost(url.hostname);
     } catch (e) {
       return { valid: false, reason: e.message || 'Invalid URL' };
     }
@@ -475,7 +489,7 @@ function sanitizePublicResult(value, key = '') {
   }
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    if (/^(?:password|api[_-]?password|authorization|access[_-]?token|refresh[_-]?token)$/i.test(k)) continue;
+    if (/^(?:password|api[_-]?password|authorization|access[_-]?token|refresh[_-]?token|cookie|set-cookie|proxy-authentication)$/i.test(k)) continue;
     out[k] = sanitizePublicResult(v, k);
   }
   return out;
@@ -598,6 +612,26 @@ const httpClient = axios.create({
   validateStatus: (s) => s >= 200 && s < 400
 });
 
+// Media URLs are discovered from untrusted pages. Follow redirects manually so
+// every hop is checked against the SSRF policy before a network connection.
+async function safeGet(url, options = {}) {
+  let current = String(url || '');
+  for (let hop = 0; hop <= 4; hop++) {
+    const gate = await SSRFValidator.validate(current);
+    if (!gate.valid) throw new Error(gate.reason || 'UNSAFE_URL');
+    const response = await axios.get(current, {
+      ...options,
+      maxRedirects: 0,
+      validateStatus: () => true
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers?.location;
+    if (!location) return response;
+    current = new URLParser(location, current).href;
+  }
+  throw new Error('TOO_MANY_REDIRECTS');
+}
+
 class DASHParser {
   static attr(tag, name) {
     const re = new RegExp('\\b' + name + '\\s*=\\s*[\"\\\']([^\"\\\']*)[\"\\\']', 'i');
@@ -666,7 +700,7 @@ class DASHParser {
 
 class HLSParser {
   static async fetchText(url, referer = null) {
-    const res = await httpClient.get(url, {
+    const res = await safeGet(url, {
       maxContentLength: 2_000_000,
       headers: { Accept: '*/*', ...(referer ? { Referer: referer } : {}) },
       timeout: 8000
@@ -1001,12 +1035,10 @@ class BrowserContextPool {
   release(ctx) {
     if (!ctx) return;
     this.inUse.delete(ctx);
-    if (ctx.context?.__vdClosed || Date.now() - ctx.createdAt > 30 * 60 * 1000 || ctx.usage > 20) {
-      this.close(ctx);
-      return;
-    }
-    ctx.usage++;
-    this.available.push(ctx);
+    // Contexts may contain cookies, localStorage, service-worker state, and
+    // page-level authentication from the previous job. Reusing them across
+    // users is unsafe, so dispose them instead of returning them to the pool.
+    this.close(ctx);
   }
   async close(ctx) {
     if (!ctx) return;
@@ -1430,6 +1462,8 @@ class ResultValidator {
   static async validateWithPage(url, page, referer = null) {
     if (!page?.context || page.context().__vdClosed) return { valid: false, reason: 'NO_PAGE_CONTEXT' };
     try {
+      const gate = await SSRFValidator.validate(url);
+      if (!gate.valid) return { valid: false, reason: gate.reason || 'UNSAFE_URL' };
       let userAgent = '';
       try { userAgent = await page.evaluate(() => navigator.userAgent); } catch (e) {}
       let origin = '';
@@ -1437,7 +1471,9 @@ class ResultValidator {
       const response = await page.context().request.get(url, {
         timeout: 7000,
         failOnStatusCode: false,
-        maxRedirects: 4,
+        // Do not let APIRequestContext follow an unchecked redirect. The
+        // safeGet fallback validates each redirect hop explicitly.
+        maxRedirects: 0,
         headers: {
           Accept: 'video/mp4,application/vnd.apple.mpegurl,application/dash+xml,*/*',
           Range: 'bytes=0-16383',
@@ -1461,9 +1497,10 @@ class ResultValidator {
     if (!url) return { valid: false, reason: 'NO_URL' };
     if (isJunkMediaUrl(url)) return { valid: false, reason: 'JUNK_OR_PLACEHOLDER' };
     try {
-      new URLParser(url);
+      const gate = await SSRFValidator.validate(url);
+      if (!gate.valid) return { valid: false, reason: gate.reason || 'UNSAFE_URL' };
     } catch (e) {
-      return { valid: false, reason: 'INVALID_URL' };
+      return { valid: false, reason: e.message || 'INVALID_URL' };
     }
     try {
       const headers = {
@@ -1478,12 +1515,10 @@ class ResultValidator {
           headers.Origin = new URLParser(referer).origin;
         } catch (e) {}
       }
-      const res = await axios.get(url, {
+      const res = await safeGet(url, {
         timeout: 10000,
-        maxRedirects: 3,
         maxContentLength: 250000,
         responseType: 'arraybuffer',
-        validateStatus: () => true,
         headers
       });
       const clHeader = res.headers?.['content-length'] || res.headers?.['content-range'];
@@ -1667,7 +1702,8 @@ class VideoExtractor {
           const key = canonicalMediaKey(u);
           const frameUrl = (() => { try { return req.frame()?.url() || pageUrl; } catch (e) { return pageUrl; } })();
           mediaFrames.set(key, frameUrl);
-          mediaHeaders.set(key, { referer: headers.referer || frameUrl || pageUrl, origin: headers.origin || null, cookie: headers.cookie || null, frameUrl });
+          // Never put session cookies into diagnostics or API responses.
+          mediaHeaders.set(key, { referer: headers.referer || frameUrl || pageUrl, origin: headers.origin || null, frameUrl });
         }
         if (looksLikeMedia(u) || looksLikeSubtitle(u)) {
           diagnostics.mediaRequests++;
@@ -2706,7 +2742,11 @@ class SearchProvider {
       if (!path || path === '/') return false;
       if (/\/(watch|watching|watch-online|episode|episodes|season|seasons|movie|movies|film|films|series|show|play|embed|player|video|مسلسل|مسلسلات|فيلم|افلام|حلقة|حلقات)(?:[\/\-_]|$)/i.test(path)) return true;
       const segments = path.split('/').filter(Boolean);
-      return segments.length >= 2 && segments[segments.length - 1].length >= 5;
+      // Many legitimate catalogues use /title-slug rather than
+      // /movie/title-slug. Treat one meaningful slug as a work page, while
+      // landing pages are filtered separately by isSourceLandingCandidate().
+      return segments.length >= 1 && segments[segments.length - 1].length >= 5 &&
+        !/^(?:home|index|main|latest|popular|trending|search|category|categories|tag|tags|about|contact|privacy|terms)$/i.test(segments[segments.length - 1]);
     } catch (e) {
       return false;
     }
@@ -2718,7 +2758,8 @@ class SearchProvider {
     if (this.isSourceLandingCandidate(item.url, item.title || item.name)) return false;
     if (item.source === 'catalog-direct' && item.candidateClass === 'watch') return this.isWorkOrWatchUrl(item.url);
     if (!this.isWorkOrWatchUrl(item.url)) return false;
-    return /watch|stream|online|episode|season|movie|movies|series|film|play|embed|player|video|\/movies?\/|\/films?\/|مسلسل|فيلم|حلقة|مشاهدة/i.test(descriptor);
+    return item.candidateClass === 'watch' ||
+      /watch|stream|online|episode|season|movie|movies|series|film|play|embed|player|video|\/movies?\/|\/films?\/|مسلسل|فيلم|حلقة|مشاهدة/i.test(descriptor);
   }
 
   matchesRequestedTitle(query = '', item = {}) {
@@ -2734,15 +2775,15 @@ class SearchProvider {
       .trim();
     const tokens = normalize(query).split(' ').filter((token) => token.length > 1 && !SearchProvider.TITLE_STOPWORDS.has(token));
     if (!tokens.length) return false;
-    const descriptor = normalize(`${item.url || ''} ${item.title || ''} ${item.name || ''}`);
+    const descriptor = normalize(`${item.url || ''} ${item.title || ''} ${item.name || ''} ${item.resolvedTitle || ''}`);
     const hits = tokens.filter((token) => descriptor.includes(token));
     const numeric = tokens.filter((token) => /^\d{4}$|^s\d+$|^e\d+$/i.test(token));
     const numericHits = numeric.filter((token) => descriptor.includes(token));
     if (numeric.length && numericHits.length !== numeric.length) return false;
     // Prefer strong titleSimilarity in addition to token coverage
     const sim = titleSimilarity(query, `${item.title || ''} ${item.name || ''}`);
-    if (sim >= 0.85 && hits.length >= Math.max(1, Math.ceil(tokens.length * 0.5))) return true;
-    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.55 : tokens.length === 2 ? 0.9 : 1);
+    if (sim >= 0.82 && hits.length >= Math.max(1, Math.ceil(tokens.length * 0.5))) return true;
+    return hits.length / tokens.length >= (tokens.length >= 3 ? 0.55 : tokens.length === 2 ? 0.75 : 1);
   }
 
   normalizeSiteHint(site = '') {
@@ -2776,7 +2817,7 @@ class SearchProvider {
     const out = [{ url: original, pageUrl: original, resolution: 'search-result', score: 0 }];
     try {
       const base = new URLParser(original);
-      const { data } = await httpClient.get(original, {
+      const { data } = await safeGet(original, {
         timeout: Math.min(NAV_TIMEOUT_MS, 7000),
         maxContentLength: 2_000_000,
         responseType: 'text',
@@ -3077,6 +3118,14 @@ class SearchProvider {
     const primaryVariants = [...new Set(aliases.flatMap((term) => [
       build(term), build(term, 'watch'), build(term, 'video'), build(term, 'episode'), build(term, 'مشاهدة')
     ]))].slice(0, SEARCH_MAX_VARIANTS);
+    // Quoted searches improve precision but often hide Arabic titles,
+    // transliterations, and sites with noisy metadata. Keep a small
+    // unquoted fallback set for recall.
+    const fallbackVariants = [...new Set(aliases.slice(0, 4).flatMap((term) => [
+      `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} watch`,
+      `${scoped}${String(term).replace(/"/g, ' ')}${identitySuffix}${typeSuffix} مشاهدة`
+    ]))];
+    const allPrimaryVariants = [...new Set([...primaryVariants, ...fallbackVariants])].slice(0, SEARCH_MAX_VARIANTS + 8);
     const quotedCanonical = `"${String(canonicalTitle).replace(/"/g, ' ')}"`;
     const watchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} watch stream player episode movie series`.trim();
     const arabicWatchQuery = `${scoped}${quotedCanonical}${identitySuffix}${typeSuffix} مشاهدة فيديو فيلم مسلسل حلقة`.trim();
@@ -3088,7 +3137,7 @@ class SearchProvider {
     const map = new Map();
     const runTier = async (tasks) => {
       for (let offset = 0; offset < tasks.length; offset += SEARCH_QUERY_CONCURRENCY) {
-        const batch = tasks.slice(offset, offset + SEARCH_QUERY_CONCURRENCY);
+        const batch = tasks.slice(offset, offset + SEARCH_QUERY_CONCURRENCY).map((task) => task());
         await Promise.allSettled(batch);
         if ([...map.values()].filter((item) => this.isWatchCandidate(item) && this.siteMatches(item, siteInfo)).length >= 8) break;
       }
@@ -3099,12 +3148,12 @@ class SearchProvider {
     );
 
     const providers = (variant) => [
-      this.searchDuckDuckGoHtml(variant, map),
-      this.searchBing(variant, map),
-      this.searchDuckDuckGoAPI(variant, map),
-      this.searchBrave(variant, map)
+      () => this.searchDuckDuckGoHtml(variant, map),
+      () => this.searchBing(variant, map),
+      () => this.searchDuckDuckGoAPI(variant, map),
+      () => this.searchBrave(variant, map)
     ];
-    await runTier(primaryVariants.flatMap(providers));
+    await runTier(allPrimaryVariants.flatMap(providers));
 
     if (!hasStrongWatch() && !options.catalogFast) {
       await runTier([watchQuery, arabicWatchQuery].flatMap(providers));
@@ -3130,6 +3179,10 @@ class SearchProvider {
         const bw = this.isWatchCandidate(b) ? 1 : 0;
         return bw - aw || Number(b.matchScore ?? b.score ?? 0) - Number(a.matchScore ?? a.score ?? 0);
       })
+      .sort((a, b) =>
+        Number(this.matchesRequestedTitle(q, b)) - Number(this.matchesRequestedTitle(q, a)) ||
+        Number(b.matchScore ?? b.score ?? 0) - Number(a.matchScore ?? a.score ?? 0)
+      )
       .slice(0, options.catalogFast ? 10 : 30)
       .map((r, i) => ({
         rank: i + 1, name: r.name, title: r.title, url: r.url, pageUrl: r.pageUrl || r.url,
@@ -3215,7 +3268,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.10.2',
+    version: '4.10.3',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -3356,7 +3409,7 @@ app.get('/api/v1/jobs/:jobId', verifyToken, async (req, res) => {
       success: true,
       jobId: job.id,
       state,
-      result,
+      result: sanitizePublicResult(result),
       attemptsMade: job.attemptsMade || 0,
       failedReason: state === 'failed' ? job.failedReason || null : null
     });
@@ -3377,7 +3430,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.2' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.10.3' } })
 );
 
 
@@ -3450,8 +3503,7 @@ async function processExtractionJob(job) {
       const catalogHasStrongWatch = catalogResults.some((r) =>
         searchProvider.isWatchCandidate(r) && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
       );
-      const movieCatalogOnly = String(job.data.category || '').trim().toLowerCase() === 'movies_series' && !String(job.data.site || '').trim();
-      const internetResults = !catalogHasStrongWatch && !movieCatalogOnly
+      const internetResults = !catalogHasStrongWatch
         ? await withTimeout(searchProvider.searchByName(job.data.search, job.data.site), HARD_SEARCH_MS, 'SEARCH_TIMEOUT')
         : [];
       // Merge every provider/catalog result before classification. A URL can be
@@ -3598,6 +3650,7 @@ async function processExtractionJob(job) {
       }
       if (db) {
         try {
+          const persistedResult = sanitizePublicResult(result);
           await db.collection('extractions').updateOne(
             { jobId: String(job.id) },
             {
@@ -3605,7 +3658,7 @@ async function processExtractionJob(job) {
                 jobId: String(job.id),
                 userId: ObjectId.isValid(userId) ? new ObjectId(userId) : userId,
                 url: job.data.url,
-                result,
+                result: persistedResult,
                 createdAt: new Date()
               }
             },
