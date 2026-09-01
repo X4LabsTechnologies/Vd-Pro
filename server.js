@@ -2364,6 +2364,63 @@ class VideoExtractor {
   }
 }
 
+async function extractWithFallback(pageUrl, page, proxy, userId, options = {}) {
+  const extractor = new VideoExtractor();
+  let primary;
+  try {
+    primary = await extractor.extract(pageUrl, page, userId, options);
+  } catch (error) {
+    primary = {
+      success: false,
+      error: error.message || 'Primary extraction failed',
+      errorCode: error.code || 'PRIMARY_EXTRACTION_ERROR',
+      variants: [],
+      diagnostics: classifyExtractionFailure({}, error)
+    };
+  }
+  if (primary?.success) return primary;
+
+  // Do not retry a page that clearly exposes encrypted media. The fallback
+  // extractor is for public HTML/player paths, not DRM or challenge bypass.
+  if (primary?.diagnostics?.drmSuspected) return primary;
+
+  try {
+    const fallback = await runFallbackExtraction({
+      page,
+      pageUrl,
+      deep: options.deep,
+      quality: options.quality,
+      cookies: [],
+      headers: {}
+    });
+    const diagnostics = {
+      ...(primary?.diagnostics || {}),
+      ...(fallback?.diagnostics || {}),
+      fallbackAttempted: true,
+      fallbackSucceeded: !!fallback?.success
+    };
+    if (fallback?.success) return { ...fallback, diagnostics };
+
+    // Keep the primary result when it found richer candidates, but always
+    // retain the fallback diagnostics for troubleshooting.
+    const primaryVariants = Array.isArray(primary?.variants) ? primary.variants.length : 0;
+    const fallbackVariants = Array.isArray(fallback?.variants) ? fallback.variants.length : 0;
+    return primaryVariants >= fallbackVariants
+      ? { ...primary, diagnostics }
+      : { ...fallback, diagnostics };
+  } catch (error) {
+    return {
+      ...primary,
+      diagnostics: {
+        ...(primary?.diagnostics || {}),
+        fallbackAttempted: true,
+        fallbackSucceeded: false,
+        fallbackError: error.message || 'Fallback extraction failed'
+      }
+    };
+  }
+}
+
 function normalizeSearchText(value = '') {
   return String(value || '')
     .toLowerCase()
