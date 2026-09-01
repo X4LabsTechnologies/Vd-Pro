@@ -3,1949 +3,546 @@
   "description": "User-managed source catalog. The extractor logic is shared across all sources.",
   "movies_series": [
     {
-      "name": "Akwam",
-      "url": "https://akwam.to",
+      "name": "1337x",
+      "url": "https://1377x.to",
       "enabled": true,
       "priority": 10
     },
     {
-      "name": "Fasel HD",
-      "url": "https://faselhd.com",
+      "name": "YTS",
+      "url": "https://yts-official.to",
       "enabled": true,
       "priority": 20
     },
     {
-      "name": "EgyBest",
-      "url": "https://egybest.si",
+      "name": "The Pirate Bay",
+      "url": "https://thepiratebay.org",
       "enabled": true,
       "priority": 30
     },
     {
-      "name": "MyCima",
-      "url": "https://mycima.link",
+      "name": "EZTV",
+      "url": "https://eztv-official.is",
       "enabled": true,
       "priority": 40
     },
     {
-      "name": "Cima4U",
-      "url": "https://cima4u.news",
+      "name": "EXT.to",
+      "url": "https://ext.to",
       "enabled": true,
       "priority": 50
     },
     {
-      "name": "Shahid4u",
-      "url": "https://shahid4u.com",
+      "name": "RARBG Clone",
+      "url": "https://rarbg.to",
       "enabled": true,
       "priority": 60
     },
     {
-      "name": "Arabseries",
-      "url": "https://arabsereis.com",
+      "name": "Torlock",
+      "url": "https://www.torlock.com",
       "enabled": true,
       "priority": 70
     },
     {
-      "name": "Movizland",
-      "url": "https://movizland.to",
+      "name": "RuTracker",
+      "url": "https://rutracker.org",
       "enabled": true,
       "priority": 80
     },
     {
-      "name": "Filmak",
-      "url": "https://filmak.net",
+      "name": "Torrentz2",
+      "url": "https://torrentz2eu.org",
       "enabled": true,
       "priority": 90
     },
     {
-      "name": "Fushaar",
-      "url": "https://fushaar.video",
+      "name": "PSArips",
+      "url": "https://psa.wf",
       "enabled": true,
       "priority": 100
     },
     {
-      "name": "GoMovies",
-      "url": "https://gomovies.gg",
+      "name": "MoviesJoy",
+      "url": "https://moviesjoy.to",
       "enabled": true,
       "priority": 110
     },
     {
-      "name": "FMovies",
-      "url": "https://fmovies.to",
+      "name": "LookMovie",
+      "url": "https://lookmovie.ag",
       "enabled": true,
       "priority": 120
-    },
-    {
-      "name": "BMovies",
-      "url": "https://bmovies.co",
-      "enabled": true,
-      "priority": 130
-    },
-    {
-      "name": "Movies123",
-      "url": "https://movies123.to",
-      "enabled": true,
-      "priority": 140
-    },
-    {
-      "name": "4Movies",
-      "url": "https://4movies.to",
-      "enabled": true,
-      "priority": 150
-    },
-    {
-      "name": "StreamWoop",
-      "url": "https://streamwoop.com",
-      "enabled": true,
-      "priority": 160
-    },
-    {
-      "name": "CouchTuner",
-      "url": "https://couchtuner.bz",
-      "enabled": true,
-      "priority": 170
-    },
-    {
-      "name": "456Movies",
-      "url": "https://456movies.com",
-      "enabled": true,
-      "priority": 180
     },
     {
       "name": "M4uHD",
       "url": "https://m4uhd.tv",
       "enabled": true,
+      "priority": 130
+    },
+    {
+      "name": "TorrentGalaxy",
+      "url": "https://torrentgalaxy.to",
+      "enabled": true,
+      "priority": 140
+    },
+    {
+      "name": "LimeTorrents",
+      "url": "https://limetorrents.to",
+      "enabled": true,
+      "priority": 150
+    },
+    {
+      "name": "YesMovies",
+      "url": "https://yesmovies.ag",
+      "enabled": true,
+      "priority": 160
+    },
+    {
+      "name": "FMovies",
+      "url": "https://fmovies.to",
+      "enabled": true,
+      "priority": 170
+    },
+    {
+      "name": "SolarMovie",
+      "url": "https://solarmovie.pe",
+      "enabled": true,
+      "priority": 180
+    },
+    {
+      "name": "GoMovies",
+      "url": "https://gomovies.to",
+      "enabled": true,
       "priority": 190
     },
     {
-      "name": "123Movies Fun",
-      "url": "https://123movies.fun",
+      "name": "VexMovies",
+      "url": "https://vexmovies.one",
       "enabled": true,
       "priority": 200
+    },
+    {
+      "name": "Putlocker",
+      "url": "https://putlocker.to",
+      "enabled": true,
+      "priority": 210
+    },
+    {
+      "name": "FaselHD",
+      "url": "https://faselhd.com",
+      "enabled": true,
+      "priority": 220
+    },
+    {
+      "name": "Akwam",
+      "url": "https://akwam.to",
+      "enabled": true,
+      "priority": 230
+    },
+    {
+      "name": "EgyBest",
+      "url": "https://egybest.si",
+      "enabled": true,
+      "priority": 240
+    },
+    {
+      "name": "MyCima",
+      "url": "https://mycima.link",
+      "enabled": true,
+      "priority": 250
+    },
+    {
+      "name": "Cima4U",
+      "url": "https://cima4u.news",
+      "enabled": true,
+      "priority": 260
+    },
+    {
+      "name": "Shahid4u",
+      "url": "https://shahid4u.com",
+      "enabled": true,
+      "priority": 270
+    },
+    {
+      "name": "Movizland",
+      "url": "https://movizland.to",
+      "enabled": true,
+      "priority": 280
+    },
+    {
+      "name": "Fushaar",
+      "url": "https://fushaar.video",
+      "enabled": true,
+      "priority": 290
+    },
+    {
+      "name": "CimaNow",
+      "url": "https://cimanow.tv",
+      "enabled": true,
+      "priority": 300
     },
     {
       "name": "Tubi",
       "url": "https://tubitv.com",
       "enabled": true,
-      "priority": 210
+      "priority": 310
     },
     {
       "name": "Pluto TV",
       "url": "https://pluto.tv",
       "enabled": true,
-      "priority": 220
+      "priority": 320
     },
     {
       "name": "Plex",
       "url": "https://plex.tv",
       "enabled": true,
-      "priority": 230
+      "priority": 330
     },
     {
       "name": "The Roku Channel",
       "url": "https://therokuchannel.roku.com",
       "enabled": true,
-      "priority": 240
+      "priority": 340
     },
     {
       "name": "Sling Freestream",
       "url": "https://sling.com/freestream",
       "enabled": true,
-      "priority": 250
+      "priority": 350
     },
     {
       "name": "Internet Archive",
       "url": "https://archive.org",
       "enabled": true,
-      "priority": 260
+      "priority": 360
     },
     {
       "name": "Crackle",
       "url": "https://crackle.com",
       "enabled": true,
-      "priority": 270
+      "priority": 370
     },
     {
-      "name": "WikiFlix",
-      "url": "https://wikiflix.tv",
+      "name": "Vudu Free",
+      "url": "https://www.vudu.com",
       "enabled": true,
-      "priority": 280
+      "priority": 380
     },
     {
-      "name": "VidSrc.pm",
-      "url": "https://vidsrc.pm",
+      "name": "Peacock TV Free",
+      "url": "https://www.peacocktv.com",
       "enabled": true,
-      "priority": 290,
-      "tmdb": true
+      "priority": 390
     },
     {
-      "name": "MoviesAPI",
-      "url": "https://moviesapi.to",
+      "name": "Rakuten TV",
+      "url": "https://rakuten.tv",
       "enabled": true,
-      "priority": 300,
-      "tmdb": true
+      "priority": 400
     },
     {
-      "name": "VidSrc.to",
-      "url": "https://vidsrc.to",
+      "name": "Red Bull TV",
+      "url": "https://www.redbull.tv",
       "enabled": true,
-      "priority": 310,
-      "tmdb": true
-    },
-    {
-      "name": "VidCore",
-      "url": "https://vidcore.org",
-      "enabled": true,
-      "priority": 320,
-      "tmdb": true
-    },
-    {
-      "name": "AutoEmbed.co",
-      "url": "https://autoembed.co",
-      "enabled": true,
-      "priority": 330,
-      "tmdb": true
-    },
-    {
-      "name": "2Embed.cc",
-      "url": "https://www.2embed.cc",
-      "enabled": true,
-      "priority": 340,
-      "tmdb": true
-    },
-    {
-      "name": "VidLink.pro",
-      "url": "https://vidlink.pro",
-      "enabled": true,
-      "priority": 350,
-      "tmdb": true
-    },
-    {
-      "name": "VidSrc.top",
-      "url": "https://vid-src.top",
-      "enabled": true,
-      "priority": 360,
-      "tmdb": true
-    },
-    {
-      "name": "VidSrc.me",
-      "url": "https://vidsrc.me",
-      "enabled": true,
-      "priority": 370,
-      "tmdb": true
-    },
-    {
-      "name": "VsEmbed.ru",
-      "url": "https://vsembed.ru",
-      "enabled": true,
-      "priority": 380,
-      "tmdb": true
-    },
-    {
-      "name": "VidSpark.to",
-      "url": "https://vidspark.to",
-      "enabled": true,
-      "priority": 390,
-      "tmdb": true
-    },
-    {
-      "name": "VidSrc.in",
-      "url": "https://vidsrc.in",
-      "enabled": true,
-      "priority": 400,
-      "tmdb": true
-    },
-    {
-      "name": "1Embed.cc",
-      "url": "https://1embed.cc",
-      "enabled": true,
-      "priority": 410,
-      "tmdb": true
-    },
-    {
-      "name": "SmashyStream",
-      "url": "https://player.smashystream.com",
-      "enabled": true,
-      "priority": 420,
-      "tmdb": true
-    },
-    {
-      "name": "Vidzee",
-      "url": "https://player.vidzee.wtf",
-      "enabled": true,
-      "priority": 430,
-      "tmdb": true
-    },
-    {
-      "name": "Videasy",
-      "url": "https://player.videasy.to",
-      "enabled": true,
-      "priority": 440,
-      "tmdb": true
-    },
-    {
-      "name": "VidNest",
-      "url": "https://vidnest.fun",
-      "enabled": true,
-      "priority": 450,
-      "tmdb": true
-    },
-    {
-      "name": "VidKing",
-      "url": "https://www.vidking.net",
-      "enabled": true,
-      "priority": 460,
-      "tmdb": true
-    },
-    {
-      "name": "VidRock",
-      "url": "https://vidrock.net",
-      "enabled": true,
-      "priority": 470,
-      "tmdb": true
-    },
-    {
-      "name": "PrimeSrc",
-      "url": "https://primesrc.me",
-      "enabled": true,
-      "priority": 480,
-      "tmdb": true
-    },
-    {
-      "name": "CineSrc",
-      "url": "https://cinesrc.st",
-      "enabled": true,
-      "priority": 490,
-      "tmdb": true
-    },
-    {
-      "name": "Peachify",
-      "url": "https://peachify.pro",
-      "enabled": true,
-      "priority": 500,
-      "tmdb": true
-    },
-    {
-      "name": "FilmU",
-      "url": "https://embed.filmu.in",
-      "enabled": true,
-      "priority": 510,
-      "tmdb": true
-    },
-    {
-      "name": "VidZen",
-      "url": "https://vidzen.fun",
-      "enabled": true,
-      "priority": 520,
-      "tmdb": true
-    },
-    {
-      "name": "111Movies",
-      "url": "https://111movies.net",
-      "enabled": true,
-      "priority": 530,
-      "tmdb": true
+      "priority": 410
     }
   ],
   "anime": [
     {
+      "name": "Nyaa",
+      "url": "https://nyaa.si",
+      "enabled": true,
+      "priority": 10
+    },
+    {
       "name": "HiAnime",
       "url": "https://hianime.to",
       "enabled": true,
-      "priority": 10
+      "priority": 20
+    },
+    {
+      "name": "Anime4up",
+      "url": "https://anime4up.com",
+      "enabled": true,
+      "priority": 30
+    },
+    {
+      "name": "AnimeBlkom",
+      "url": "https://animeblkom.com",
+      "enabled": true,
+      "priority": 40
+    },
+    {
+      "name": "Animeiat",
+      "url": "https://animeiat.tv",
+      "enabled": true,
+      "priority": 50
+    },
+    {
+      "name": "GateAnime",
+      "url": "https://gateanime.com",
+      "enabled": true,
+      "priority": 60
+    },
+    {
+      "name": "KissAsian",
+      "url": "https://kissasian.sh",
+      "enabled": true,
+      "priority": 70
     },
     {
       "name": "9anime",
       "url": "https://9anime.to",
       "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Aniwatch",
-      "url": "https://aniwatch.to",
-      "enabled": true,
-      "priority": 30
+      "priority": 80
     },
     {
       "name": "Gogoanime",
       "url": "https://gogoanime3.cc",
       "enabled": true,
-      "priority": 40
+      "priority": 90
     },
     {
-      "name": "Anitaku",
-      "url": "https://anitaku.to",
+      "name": "Aniwatch",
+      "url": "https://aniwatch.to",
       "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "KissKH",
-      "url": "https://kisskh.co",
-      "enabled": true,
-      "priority": 60
+      "priority": 100
     },
     {
       "name": "AnimeSuge",
       "url": "https://animesuge.to",
       "enabled": true,
-      "priority": 70
+      "priority": 110
+    },
+    {
+      "name": "Anitaku",
+      "url": "https://anitaku.to",
+      "enabled": true,
+      "priority": 120
+    },
+    {
+      "name": "AnimeHeaven",
+      "url": "https://animeheaven.ru",
+      "enabled": true,
+      "priority": 130
+    },
+    {
+      "name": "Simplyaweeb",
+      "url": "https://simplyaweeb.com",
+      "enabled": true,
+      "priority": 140
+    },
+    {
+      "name": "AnimeTake",
+      "url": "https://animetake.tv",
+      "enabled": true,
+      "priority": 150
+    },
+    {
+      "name": "AnimeSalt",
+      "url": "https://animesalt.org",
+      "enabled": true,
+      "priority": 160
+    },
+    {
+      "name": "Anikoto",
+      "url": "https://anikoto.to",
+      "enabled": true,
+      "priority": 170
+    },
+    {
+      "name": "Anime Academy",
+      "url": "https://animeacademy.xyz",
+      "enabled": true,
+      "priority": 180
+    },
+    {
+      "name": "Anime World",
+      "url": "https://animeworld.tv",
+      "enabled": true,
+      "priority": 190
+    },
+    {
+      "name": "Anitown",
+      "url": "https://anitown.tv",
+      "enabled": true,
+      "priority": 200
+    },
+    {
+      "name": "Anime Lords",
+      "url": "https://animelords.org",
+      "enabled": true,
+      "priority": 210
+    },
+    {
+      "name": "Allanime",
+      "url": "https://allanime.to",
+      "enabled": true,
+      "priority": 220
+    },
+    {
+      "name": "KissKH",
+      "url": "https://kisskh.co",
+      "enabled": true,
+      "priority": 230
     },
     {
       "name": "AnimeHub",
       "url": "https://animehub.to",
       "enabled": true,
+      "priority": 240
+    },
+    {
+      "name": "AniDex",
+      "url": "https://anidex.tv",
+      "enabled": true,
+      "priority": 250
+    },
+    {
+      "name": "TokyoTosho",
+      "url": "https://tokyotosho.info",
+      "enabled": true,
+      "priority": 260
+    },
+    {
+      "name": "BakaBT",
+      "url": "https://bakabt.me",
+      "enabled": true,
+      "priority": 270
+    },
+    {
+      "name": "AnimeDao",
+      "url": "https://animedao.to",
+      "enabled": true,
+      "priority": 280
+    },
+    {
+      "name": "AnimePahe",
+      "url": "https://animepahe.ru",
+      "enabled": true,
+      "priority": 290
+    },
+    {
+      "name": "Zoro.to",
+      "url": "https://zoro.to",
+      "enabled": true,
+      "priority": 300
+    },
+    {
+      "name": "Tenshi.moe",
+      "url": "https://tenshi.moe",
+      "enabled": true,
+      "priority": 310
+    },
+    {
+      "name": "Twist.moe",
+      "url": "https://twist.moe",
+      "enabled": true,
+      "priority": 320
+    },
+    {
+      "name": "Masteranime",
+      "url": "https://masteranime.es",
+      "enabled": true,
+      "priority": 330
+    },
+    {
+      "name": "Chia-Anime",
+      "url": "https://chia-anime.tv",
+      "enabled": true,
+      "priority": 340
+    },
+    {
+      "name": "AnimeFreak",
+      "url": "https://animefreak.tv",
+      "enabled": true,
+      "priority": 350
+    },
+    {
+      "name": "AniMixPlay",
+      "url": "https://animixplay.to",
+      "enabled": true,
+      "priority": 360
+    },
+    {
+      "name": "Soul-Anime",
+      "url": "https://soul-anime.tv",
+      "enabled": true,
+      "priority": 370
+    },
+    {
+      "name": "AnimeRush",
+      "url": "https://animerush.tv",
+      "enabled": true,
+      "priority": 380
+    },
+    {
+      "name": "WatchAnime",
+      "url": "https://watchanime.xyz",
+      "enabled": true,
+      "priority": 390
+    }
+  ],
+  "additional_sites": [
+    {
+      "name": "YGGTorrent",
+      "url": "https://yggtorrent.si",
+      "enabled": true,
+      "priority": 10
+    },
+    {
+      "name": "CPRX",
+      "url": "https://cprx.to",
+      "enabled": true,
+      "priority": 20
+    },
+    {
+      "name": "Torrent9",
+      "url": "https://torrent9.gg",
+      "enabled": true,
+      "priority": 30
+    },
+    {
+      "name": "Bitsearch",
+      "url": "https://bitsearch.to",
+      "enabled": true,
+      "priority": 40
+    },
+    {
+      "name": "Glodls",
+      "url": "https://glodls.to",
+      "enabled": true,
+      "priority": 50
+    },
+    {
+      "name": "MagnetDL",
+      "url": "https://magnetdl.com",
+      "enabled": true,
+      "priority": 60
+    },
+    {
+      "name": "SeedPeer",
+      "url": "https://seedpeer.info",
+      "enabled": true,
+      "priority": 70
+    },
+    {
+      "name": "YourBittorrent",
+      "url": "https://yourbittorrent.com",
+      "enabled": true,
       "priority": 80
     },
     {
-      "name": "Crunchyroll",
-      "url": "https://crunchyroll.com",
+      "name": "Rutor",
+      "url": "https://rutor.info",
       "enabled": true,
       "priority": 90
     },
     {
-      "name": "Ani-One Asia",
-      "url": "https://www.youtube.com/@AniOneAsia",
-      "enabled": true,
-      "priority": 100
-    },
-    {
-      "name": "RetroCrush",
-      "url": "https://retrocrush.tv",
-      "enabled": true,
-      "priority": 110
-    },
-    {
-      "name": "AsianCrush",
-      "url": "https://asiancrush.com",
-      "enabled": true,
-      "priority": 120
-    },
-    {
-      "name": "OceanVeil",
-      "url": "https://oceanveil.net",
-      "enabled": true,
-      "priority": 130
-    }
-  ],
-  "music": [
-    {
-      "name": "MP3Juices",
-      "url": "https://mp3juices.cc",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "MP3Skull",
-      "url": "https://mp3skull.to",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Tubidy",
-      "url": "https://tubidy.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "MyMP3",
-      "url": "https://mymp3.net",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "BeeMP3",
-      "url": "https://beemp3.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "MP3Paw",
-      "url": "https://mp3paw.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "OKmusi",
-      "url": "https://okmusi.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "MyGOMP3",
-      "url": "https://anyukit.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Maktobat",
-      "url": "https://maktobat.net",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Sma3na",
-      "url": "https://sma3na.com",
-      "enabled": true,
-      "priority": 100
-    },
-    {
-      "name": "Aghanina",
-      "url": "https://aghanina.com",
-      "enabled": true,
-      "priority": 110
-    },
-    {
-      "name": "Tarab",
-      "url": "https://tarab.com",
-      "enabled": true,
-      "priority": 120
-    },
-    {
-      "name": "Haneen",
-      "url": "https://haneen.com",
-      "enabled": true,
-      "priority": 130
-    },
-    {
-      "name": "Naghamati",
-      "url": "https://naghamati.com",
-      "enabled": true,
-      "priority": 140
-    },
-    {
-      "name": "Aghani MP3",
-      "url": "https://aghani-mp3.net",
-      "enabled": true,
-      "priority": 150
-    },
-    {
-      "name": "Gaana",
-      "url": "https://gaana.com",
-      "enabled": true,
-      "priority": 160
-    },
-    {
-      "name": "JioSaavn",
-      "url": "https://jiosaavn.com",
-      "enabled": true,
-      "priority": 170
-    },
-    {
-      "name": "Palco MP3",
-      "url": "https://palcomp3.com",
-      "enabled": true,
-      "priority": 180
-    },
-    {
-      "name": "Deezer",
-      "url": "https://deezer.com",
-      "enabled": true,
-      "priority": 190
-    },
-    {
-      "name": "Jamendo",
-      "url": "https://jamendo.com",
-      "enabled": true,
-      "priority": 200
-    },
-    {
-      "name": "BeeMP3s",
-      "url": "https://beemp3s.net",
-      "enabled": true,
-      "priority": 210
-    },
-    {
-      "name": "SoundCloud",
-      "url": "https://soundcloud.com",
-      "enabled": true,
-      "priority": 220
-    }
-  ],
-  "general_video": [
-    {
-      "name": "YouTube",
-      "url": "https://youtube.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "TikTok",
-      "url": "https://tiktok.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Dailymotion",
-      "url": "https://dailymotion.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Vimeo",
-      "url": "https://vimeo.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Instagram Reels",
-      "url": "https://instagram.com/reels",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Snapchat",
-      "url": "https://snapchat.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Twitch",
-      "url": "https://twitch.tv",
-      "enabled": true,
-      "priority": 70
-    }
-  ],
-  "stock_video": [
-    {
-      "name": "Pexels",
-      "url": "https://pexels.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Pixabay",
-      "url": "https://pixabay.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Videvo",
-      "url": "https://videvo.net",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Mixkit",
-      "url": "https://mixkit.co",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Coverr",
-      "url": "https://coverr.co",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Life of Vids",
-      "url": "https://lifeofvids.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Videezy",
-      "url": "https://videezy.com",
-      "enabled": true,
-      "priority": 70
-    }
-  ],
-  "documentary_education": [
-    {
-      "name": "Documentary Heaven",
-      "url": "https://documentaryheaven.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Top Documentary Films",
-      "url": "https://topdocumentaryfilms.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "TED Talks",
-      "url": "https://ted.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Khan Academy",
-      "url": "https://khanacademy.org",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "YouTube EDU",
-      "url": "https://youtube.com/edu",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Internet Archive",
-      "url": "https://archive.org",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "National Geographic",
-      "url": "https://nationalgeographic.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "BBC Documentary",
-      "url": "https://bbc.com/documentaries",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "PBS Documentaries",
-      "url": "https://pbs.org/documentaries",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Documentary Mania",
-      "url": "https://documentarymania.com",
-      "enabled": true,
-      "priority": 100
-    },
-    {
-      "name": "SnagFilms",
-      "url": "https://snagfilms.com",
-      "enabled": true,
-      "priority": 110
-    },
-    {
-      "name": "Dailymotion Documentary",
-      "url": "https://dailymotion.com/documentary",
-      "enabled": true,
-      "priority": 120
-    },
-    {
-      "name": "Vimeo Education",
-      "url": "https://vimeo.com/channels/education",
-      "enabled": true,
-      "priority": 130
-    },
-    {
-      "name": "Open Culture",
-      "url": "https://openculture.com",
-      "enabled": true,
-      "priority": 140
-    },
-    {
-      "name": "FreeDocumentaries",
-      "url": "https://freedocumentaries.org",
-      "enabled": true,
-      "priority": 150
-    }
-  ],
-  "historical_archives": [
-    {
-      "name": "Internet Archive",
-      "url": "https://archive.org",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Prelinger Archives",
-      "url": "https://archive.org/details/prelinger",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Public Domain Review",
-      "url": "https://publicdomainreview.org",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Library of Congress",
-      "url": "https://loc.gov",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "National Archives",
-      "url": "https://archives.gov",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Wikimedia Commons",
-      "url": "https://commons.wikimedia.org",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Pond5 Public Domain",
-      "url": "https://pond5.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "FedFlix",
-      "url": "https://archive.org/details/FedFlix",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Smithsonian Open Access",
-      "url": "https://smithsonian.org/openaccess",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "American Archive of Public Broadcasting",
-      "url": "https://americanarchive.org",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "news_video": [
-    {
-      "name": "CNN",
-      "url": "https://cnn.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "BBC News",
-      "url": "https://bbc.com/news",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "AP Archive",
-      "url": "https://youtube.com/@APArchive",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "C-SPAN",
-      "url": "https://c-span.org",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Haystack News",
-      "url": "https://haystack.tv",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Africanews",
-      "url": "https://africanews.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "NPR",
-      "url": "https://npr.org",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Stirr",
-      "url": "https://stirr.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "AllAfrica",
-      "url": "https://allafrica.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Vanderbilt Television News Archive",
-      "url": "https://tvnews.vanderbilt.edu",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "religious_spiritual": [
-    {
-      "name": "GodTube",
-      "url": "https://godtube.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "CROSS.TV",
-      "url": "https://cross.tv",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "TBN",
-      "url": "https://tbn.org",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Trinitas Film",
-      "url": "https://trinitas.film",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Almajd TV",
-      "url": "https://almajdtv.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Sermons Online",
-      "url": "https://sermonsonline.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Bible Gateway Videos",
-      "url": "https://biblegateway.com/videos",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Hidayat TV",
-      "url": "https://hidayattv.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Daystar TV",
-      "url": "https://daystar.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "EWTN",
-      "url": "https://ewtn.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "diy_howto": [
-    {
-      "name": "YouTube Education",
-      "url": "https://youtube.com/education",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "TED Talks",
-      "url": "https://ted.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Skillshare",
-      "url": "https://skillshare.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Creativebug",
-      "url": "https://creativebug.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Craftsy",
-      "url": "https://craftsy.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Domestika",
-      "url": "https://domestika.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Michaels Classes",
-      "url": "https://michaels.com/classes",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Instructables",
-      "url": "https://instructables.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "5-Minute Crafts",
-      "url": "https://5-minute-crafts.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "gaming_video": [
-    {
-      "name": "Steam Gameplay Videos",
-      "url": "https://steamcommunity.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Epic Games Videos",
-      "url": "https://epicgames.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "GOG Videos",
-      "url": "https://gog.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "GameSpot",
-      "url": "https://gamespot.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "IGN",
-      "url": "https://ign.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Polygon",
-      "url": "https://polygon.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Kotaku",
-      "url": "https://kotaku.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Rock Paper Shotgun",
-      "url": "https://rockpapershotgun.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "The Escapist",
-      "url": "https://escapistmagazine.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Nintendo Life",
-      "url": "https://nintendolife.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "art_creative": [
-    {
-      "name": "My Modern Met",
-      "url": "https://mymodernmet.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Colossal",
-      "url": "https://thisiscolossal.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Designboom",
-      "url": "https://designboom.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Artsy",
-      "url": "https://artsy.net",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Saatchi Art",
-      "url": "https://saatchiart.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Widewalls",
-      "url": "https://widewalls.ch",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Artribune",
-      "url": "https://artribune.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Hyperallergic",
-      "url": "https://hyperallergic.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Artnet News",
-      "url": "https://news.artnet.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Frieze",
-      "url": "https://frieze.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "travel_nature": [
-    {
-      "name": "Airbnb Experiences",
-      "url": "https://airbnb.com/experiences",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Lonely Planet Videos",
-      "url": "https://lonelyplanet.com/videos",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Travel + Leisure Videos",
-      "url": "https://travelandleisure.com/videos",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "AFAR",
-      "url": "https://afar.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Matador Network",
-      "url": "https://matadornetwork.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Outdoor Project",
-      "url": "https://outdoorproject.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "The Outbound",
-      "url": "https://theoutbound.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Explorers Web",
-      "url": "https://explorersweb.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Mountain Review",
-      "url": "https://mountainreview.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "AllTrails",
-      "url": "https://alltrails.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "tech_science": [
-    {
-      "name": "Ars Technica",
-      "url": "https://arstechnica.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Wired",
-      "url": "https://wired.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "TechCrunch",
-      "url": "https://techcrunch.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "The Verge",
-      "url": "https://theverge.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Gizmodo",
-      "url": "https://gizmodo.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Engadget",
-      "url": "https://engadget.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "The Next Web",
-      "url": "https://thenextweb.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "ZDNet",
-      "url": "https://zdnet.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "CNET",
-      "url": "https://cnet.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Digital Trends",
-      "url": "https://digitaltrends.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "cooking_food": [
-    {
-      "name": "Serious Eats",
-      "url": "https://seriouseats.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Epicurious",
-      "url": "https://epicurious.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Delish",
-      "url": "https://delish.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Bon Appétit",
-      "url": "https://bonappetit.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "The Kitchn",
-      "url": "https://thekitchn.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Simply Recipes",
-      "url": "https://simplyrecipes.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Spruce Eats",
-      "url": "https://thespruceeats.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Taste of Home",
-      "url": "https://tasteofhome.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Food52",
-      "url": "https://food52.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Saveur",
-      "url": "https://saveur.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "fitness_health": [
-    {
-      "name": "Bodybuilding.com",
-      "url": "https://bodybuilding.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Muscle & Fitness",
-      "url": "https://muscleandfitness.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Men's Health",
-      "url": "https://menshealth.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Women's Health",
-      "url": "https://womenshealth.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Shape",
-      "url": "https://shape.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Healthline",
-      "url": "https://healthline.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "WebMD",
-      "url": "https://webmd.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Mayo Clinic",
-      "url": "https://mayoclinic.org",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Verywell Fit",
-      "url": "https://verywellfit.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Self",
-      "url": "https://self.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "theater_live": [
-    {
-      "name": "Broadway.com",
-      "url": "https://broadway.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "TheatreMania",
-      "url": "https://theatermania.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Playbill",
-      "url": "https://playbill.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "London Theatre Direct",
-      "url": "https://londontheatredirect.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "The Broadway League",
-      "url": "https://broadwayleague.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "National Theatre",
-      "url": "https://youtube.com/@NationalTheatre",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Royal Shakespeare Company",
-      "url": "https://rsc.org.uk",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Globe Theatre",
-      "url": "https://shakespearesglobe.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "The Public Theater",
-      "url": "https://publictheater.org",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "The Actors Fund",
-      "url": "https://actorsfund.org",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "short_films": [
-    {
-      "name": "FilmShortage",
-      "url": "https://filmshortage.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Short of the Week",
-      "url": "https://shortoftheweek.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Watch Now",
-      "url": "https://watchnow.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Director's Notes",
-      "url": "https://directorsnotes.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Film Independent",
-      "url": "https://filmindependent.org",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Spike Lee's Shorts",
-      "url": "https://spikelee.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Sundance Shorts",
-      "url": "https://sundance.org",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Vimeo Staff Picks",
-      "url": "https://vimeo.com/channels/staffpicks",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "The Atlantic Videos",
-      "url": "https://theatlantic.com/video",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "The New Yorker Videos",
-      "url": "https://newyorker.com/video",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "lifestyle": [
-    {
-      "name": "Blogger Videos",
-      "url": "https://blogger.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "WordPress Videos",
-      "url": "https://wordpress.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Flickr",
-      "url": "https://flickr.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "500px",
-      "url": "https://500px.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "VSCO",
-      "url": "https://vsco.co",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Tumblr",
-      "url": "https://tumblr.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Pinterest",
-      "url": "https://pinterest.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Medium",
-      "url": "https://medium.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Substack Videos",
-      "url": "https://substack.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Ghost",
-      "url": "https://ghost.org",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "sports_video": [
-    {
-      "name": "Hudl",
-      "url": "https://hudl.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "ESPN Watch",
-      "url": "https://espn.com/watch",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "FOX Sports",
-      "url": "https://foxsports.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "NBC Sports",
-      "url": "https://nbcsports.com/watch",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "FIFA+",
-      "url": "https://plus.fifa.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Olympics",
-      "url": "https://olympics.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "NBA",
-      "url": "https://nba.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "NFL",
-      "url": "https://nfl.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "MLB",
-      "url": "https://mlb.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "NCAA",
-      "url": "https://ncaa.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "kids_family": [
-    {
-      "name": "Sensical",
-      "url": "https://sensical.tv",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Kidoodle.TV",
-      "url": "https://kidoodle.tv",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "PBS KIDS",
-      "url": "https://pbskids.org",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "National Geographic Kids",
-      "url": "https://kids.nationalgeographic.com/videos",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Khan Academy Kids",
-      "url": "https://khanacademy.org/kids",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Sesame Street",
-      "url": "https://sesamestreet.org",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Nickelodeon",
-      "url": "https://nick.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Cartoon Network",
-      "url": "https://cartoonnetwork.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "CBeebies",
-      "url": "https://bbc.co.uk/cbeebies",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Treehouse",
-      "url": "https://treehousetv.com",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "podcasts_video": [
-    {
-      "name": "Apple Podcasts",
-      "url": "https://podcasts.apple.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Spotify Podcasts",
-      "url": "https://open.spotify.com",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Podbean",
-      "url": "https://podbean.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "YouTube Podcasts",
-      "url": "https://youtube.com/podcasts",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "SoundCloud Podcasts",
-      "url": "https://soundcloud.com",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Vimeo Video Podcasts",
-      "url": "https://vimeo.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Libsyn",
-      "url": "https://libsyn.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Zencastr",
-      "url": "https://zencastr.com",
-      "enabled": true,
-      "priority": 80
-    }
-  ],
-  "live_streaming": [
-    {
-      "name": "YouTube Live",
-      "url": "https://youtube.com/live",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Twitch",
-      "url": "https://twitch.tv",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Dailymotion Live",
-      "url": "https://dailymotion.com",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Vimeo Live",
-      "url": "https://vimeo.com",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "Facebook Live",
-      "url": "https://facebook.com/live",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Kick",
-      "url": "https://kick.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Rumble",
-      "url": "https://rumble.com",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Mixcloud Live",
-      "url": "https://mixcloud.com",
-      "enabled": true,
-      "priority": 80
-    }
-  ],
-  "space_science": [
-    {
-      "name": "NASA",
-      "url": "https://nasa.gov",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "NASA JPL Videos",
-      "url": "https://jpl.nasa.gov/videos",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "ESA",
-      "url": "https://esa.int",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "NASA TV",
-      "url": "https://nasa.gov/multimedia/nasatv",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "ViewSpace",
-      "url": "https://viewspace.org",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Caltech Spitzer",
-      "url": "https://spitzer.caltech.edu/videos",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "CERN",
-      "url": "https://home.cern",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Science Channel",
-      "url": "https://sciencechannel.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "SciShow",
-      "url": "https://youtube.com/@SciShow",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Veritasium",
-      "url": "https://youtube.com/@veritasium",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "history_culture": [
-    {
-      "name": "Smithsonian",
-      "url": "https://smithsonianmag.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "Library of Congress",
-      "url": "https://loc.gov",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "National Archives",
-      "url": "https://archives.gov",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "British Museum",
-      "url": "https://britishmuseum.org",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "The Met",
-      "url": "https://metmuseum.org",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Google Arts & Culture",
-      "url": "https://artsandculture.google.com",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "Khan Academy Art History",
-      "url": "https://khanacademy.org/humanities/arthistory",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "History Channel",
-      "url": "https://history.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Ancient History Encyclopedia",
-      "url": "https://worldhistory.org",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "Digital Public Library of America",
-      "url": "https://dp.la",
-      "enabled": true,
-      "priority": 100
-    }
-  ],
-  "language_learning": [
-    {
-      "name": "Duolingo",
-      "url": "https://duolingo.com",
-      "enabled": true,
-      "priority": 10
-    },
-    {
-      "name": "BBC Languages",
-      "url": "https://bbc.co.uk/languages",
-      "enabled": true,
-      "priority": 20
-    },
-    {
-      "name": "Easy Languages",
-      "url": "https://youtube.com/@Easylanguages",
-      "enabled": true,
-      "priority": 30
-    },
-    {
-      "name": "Language Transfer",
-      "url": "https://languagetransfer.org",
-      "enabled": true,
-      "priority": 40
-    },
-    {
-      "name": "OpenLearn Languages",
-      "url": "https://open.edu/openlearn",
-      "enabled": true,
-      "priority": 50
-    },
-    {
-      "name": "Coursera Languages",
-      "url": "https://coursera.org",
-      "enabled": true,
-      "priority": 60
-    },
-    {
-      "name": "edX Languages",
-      "url": "https://edx.org",
-      "enabled": true,
-      "priority": 70
-    },
-    {
-      "name": "Memrise",
-      "url": "https://memrise.com",
-      "enabled": true,
-      "priority": 80
-    },
-    {
-      "name": "Babbel",
-      "url": "https://babbel.com",
-      "enabled": true,
-      "priority": 90
-    },
-    {
-      "name": "LanguagePlayer",
-      "url": "https://languageplayer.io",
+      "name": "Kinozal",
+      "url": "https://kinozal.tv",
       "enabled": true,
       "priority": 100
     }
