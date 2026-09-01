@@ -1,5 +1,5 @@
 /**
- * Vd-Pro v4.11.0 — Search & extraction hardening (same public API)
+ * Vd-Pro v4.11.1 — Search & extraction hardening (same public API)
  *
  * Extraction-only improvements:
  * - Multi-round play + force HTML5 video.play()
@@ -3431,7 +3431,7 @@ app.get('/api/v1/health', (req, res) => {
     ready: startupReady,
     startupError: startupError ? 'STARTUP_DEGRADED' : null,
     name: 'Vd-Pro',
-    version: '4.11.0',
+    version: '4.11.1',
     redis: redis.status,
     mongodb: db ? 'connected' : 'disconnected',
     limits: {
@@ -3593,7 +3593,7 @@ app.get('/api/v1/proxy-status', verifyToken, (req, res) => {
 app.use(
   '/api-docs',
   swaggerUi.serve,
-  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.11.0' } })
+  swaggerUi.setup({ openapi: '3.0.0', info: { title: 'Vd-Pro', version: '4.11.1' } })
 );
 
 
@@ -3698,9 +3698,54 @@ async function processExtractionJob(job) {
       const infoCandidates = results.filter(
         (r) => searchProvider.isInfoCandidate(r.url, r.source) || r.candidateClass === 'info'
       );
-      const watchCandidates = results.filter(
-        (r) => searchProvider.isWatchCandidate(r) && r.candidateClass !== 'info' && (searchProvider.matchesRequestedTitle(job.data.search, r) || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)) && Number(r.matchScore ?? 0) >= 0.12 && searchProvider.isWorkOrWatchUrl(r.url)
-      );
+      const siteHint = String(job.data.site || '').trim();
+      const isIdentity = (r) => r?.discovery === 'identity-url' || String(r?.source || '').startsWith('identity-');
+      const isJunkHost = (url) => {
+        try {
+          const h = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+          return /(^|\.)(wikipedia\.org|imdb\.com|themoviedb\.org|rottentomatoes\.com|metacritic\.com|netflix\.com|disneyplus\.com|primevideo\.com|youtube\.com|youtu\.be|github\.com|reddit\.com|facebook\.com|twitter\.com|x\.com|instagram\.com|tiktok\.com|moviemeter\.nl|inception\.nl|amazon\.com|apple\.com|microsoft\.com|google\.com)$/i.test(h);
+        } catch { return true; }
+      };
+      let watchCandidates = results.filter((r) => {
+        if (!r?.url || r.candidateClass === 'info') return false;
+        if (isJunkHost(r.url)) return false;
+        if (isIdentity(r)) return true;
+        if (!searchProvider.isWatchCandidate(r)) return false;
+        const titleOk = searchProvider.matchesRequestedTitle(job.data.search, r)
+          || searchProvider.matchesRequestedTitle(r.resolvedTitle || '', r)
+          || Number(r.matchScore ?? 0) >= 0.45;
+        if (!titleOk) return false;
+        if (Number(r.matchScore ?? 0) < 0.08) return false;
+        return searchProvider.isWorkOrWatchUrl(r.url) || /embed|player|watch|movie|series|episode|فيلم|مسلسل|حلقة|مشاهدة/i.test(`${r.url} ${r.name || ''}`);
+      });
+      // Prefer identity/embed URLs first, then higher matchScore
+      watchCandidates = watchCandidates.sort((a, b) => {
+        const ai = isIdentity(a) ? 1 : 0;
+        const bi = isIdentity(b) ? 1 : 0;
+        if (bi !== ai) return bi - ai;
+        return Number(b.matchScore ?? b.score ?? 0) - Number(a.matchScore ?? a.score ?? 0);
+      });
+      // If site was requested, put same-site candidates first (still keep identity fallback after)
+      if (siteHint) {
+        const siteInfo = searchProvider.normalizeSiteHint(siteHint);
+        const onSite = [];
+        const offSite = [];
+        for (const c of watchCandidates) {
+          if (searchProvider.siteMatches(c, siteInfo) || isIdentity(c)) onSite.push(c);
+          else offSite.push(c);
+        }
+        // identity already in onSite via isIdentity; prefer true site matches before other identity only when site is embed-like
+        const siteFirst = onSite.sort((a, b) => {
+          const as = searchProvider.siteMatches(a, siteInfo) ? 1 : 0;
+          const bs = searchProvider.siteMatches(b, siteInfo) ? 1 : 0;
+          if (bs !== as) return bs - as;
+          const ai = isIdentity(a) ? 1 : 0;
+          const bi = isIdentity(b) ? 1 : 0;
+          if (bi !== ai) return bi - ai;
+          return Number(b.matchScore ?? 0) - Number(a.matchScore ?? 0);
+        });
+        watchCandidates = [...siteFirst, ...offSite];
+      }
       if (!watchCandidates.length) {
         return {
           success: false,
@@ -3714,11 +3759,18 @@ async function processExtractionJob(job) {
       }
       const candidateAttempts = [];
       let selected = null;
-      for (const candidate of watchCandidates.slice(0, 3)) {
-        const resolvedPages = await searchProvider.resolveWatchPages(candidate, job.data.search);
+      // Try more candidates when identity URLs are present (direct extract path)
+      const maxCandidates = Math.min(6, Math.max(3, watchCandidates.filter(isIdentity).length || 3));
+      for (const candidate of watchCandidates.slice(0, maxCandidates)) {
+        // Identity/embed URLs: extract the URL itself first (no resolveWatchPages detour)
+        const directFirst = isIdentity(candidate)
+          ? [{ url: candidate.url, pageUrl: candidate.url, resolution: 'identity-direct' }]
+          : null;
+        const resolvedPages = directFirst || await searchProvider.resolveWatchPages(candidate, job.data.search);
         for (const target of resolvedPages) {
+          if (isJunkHost(target.url)) continue;
           const remaining = Math.max(20000, JOB_PROCESS_TIMEOUT_MS - (Date.now() - jobStartedAt) - 5000);
-          if (candidateAttempts.length >= 3 || (remaining < 12000 && candidateAttempts.length)) break;
+          if (candidateAttempts.length >= maxCandidates || (remaining < 12000 && candidateAttempts.length)) break;
           try {
             const candidateResult = await withTimeout(
               extractWithFallback(target.url, page, proxy, userId, {
@@ -3730,27 +3782,60 @@ async function processExtractionJob(job) {
               'SEARCH_CANDIDATE_TIMEOUT'
             );
             const routed = applyMediaFlowProxy(candidateResult);
-            candidateAttempts.push({ url: target.url, pageUrl: target.pageUrl || candidate.url, resolution: target.resolution, name: candidate.name, success: !!routed?.success, errorCode: routed?.errorCode || null });
+            const ok = !!(routed?.success && (routed?.validated || routed?.primaryUrl));
+            candidateAttempts.push({
+              url: target.url,
+              pageUrl: target.pageUrl || candidate.url,
+              resolution: target.resolution,
+              name: candidate.name,
+              source: candidate.source,
+              success: ok,
+              errorCode: routed?.errorCode || null
+            });
             selected = { candidate: { ...candidate, resolvedUrl: target.url, pageUrl: target.pageUrl || candidate.url }, extraction: routed };
-            if (routed?.success) break;
+            if (ok) break;
           } catch (error) {
-            candidateAttempts.push({ url: target.url, pageUrl: target.pageUrl || candidate.url, resolution: target.resolution, name: candidate.name, success: false, errorCode: error.code || 'SEARCH_CANDIDATE_ERROR' });
+            candidateAttempts.push({
+              url: target.url,
+              pageUrl: target.pageUrl || candidate.url,
+              resolution: target.resolution,
+              name: candidate.name,
+              source: candidate.source,
+              success: false,
+              errorCode: error.code || 'SEARCH_CANDIDATE_ERROR'
+            });
           }
         }
-        if (selected?.extraction?.success || candidateAttempts.length >= 3) break;
+        if (selected?.extraction?.success && (selected.extraction.validated || selected.extraction.primaryUrl)) break;
+        if (candidateAttempts.length >= maxCandidates) break;
       }
-      const chosen = selected || { candidate: watchCandidates[0], extraction: { success: false, errorCode: 'SEARCH_CANDIDATES_EXHAUSTED', error: 'Matching watch pages could not be extracted' } };
+      const chosen = selected || {
+        candidate: watchCandidates[0],
+        extraction: { success: false, errorCode: 'SEARCH_CANDIDATES_EXHAUSTED', error: 'Matching watch pages could not be extracted' }
+      };
+      const extractOk = !!(chosen.extraction?.success && (chosen.extraction?.validated || chosen.extraction?.primaryUrl));
       return {
-        success: !!chosen.extraction.success,
+        success: extractOk,
         query: job.data.search,
         matchedName: chosen.candidate.name,
         matchedUrl: chosen.candidate.url,
         pageUrl: chosen.candidate.pageUrl || chosen.candidate.url,
-        watchCandidates: watchCandidates.slice(0, 3),
+        watchCandidates: watchCandidates.slice(0, 8),
         infoCandidates: infoCandidates.slice(0, 10),
         searchResults: results.slice(0, 10),
         candidateAttempts,
-        extraction: chosen.extraction
+        extraction: chosen.extraction,
+        ...(extractOk ? {
+          primaryUrl: chosen.extraction.primaryUrl,
+          validated: chosen.extraction.validated,
+          urls: chosen.extraction.urls,
+          variants: chosen.extraction.variants,
+          qualities: chosen.extraction.qualities,
+          duration: chosen.extraction.duration,
+          pageTitle: chosen.extraction.pageTitle,
+          diagnostics: chosen.extraction.diagnostics,
+          linkMeta: chosen.extraction.linkMeta
+        } : {})
       };
     }
 
@@ -3937,13 +4022,13 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info('Vd-Pro v4.11.0 listening on :' + PORT);
-  console.log('VD-PRO v4.11.0 — listening early; browser warm-up in progress — same API');
+  logger.info('Vd-Pro v4.11.1 listening on :' + PORT);
+  console.log('VD-PRO v4.11.1 — listening early; browser warm-up in progress — same API');
 });
 
 (async () => {
   try {
-    logger.info('Vd-Pro v4.11.0 starting...');
+    logger.info('Vd-Pro v4.11.1 starting...');
     proxyManager.checkAll().catch((e) => logger.warn({ error: e.message }, 'Proxy health check failed'));
     await connectDatabase();
     browserPool = new BrowserPool(BROWSER_POOL_COUNT);
