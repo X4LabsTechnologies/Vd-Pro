@@ -382,6 +382,35 @@ function looksLikeSubtitle(url = '', ct = '') {
   return false;
 }
 
+function redactSensitiveUrl(value) {
+  if (typeof value !== 'string' || !/^https?:\/\//i.test(value)) return value;
+  try {
+    const parsed = new URLParser(value);
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (/^(?:api[_-]?password|password|authorization|access[_-]?token|refresh[_-]?token)$/i.test(key)) parsed.searchParams.set(key, '[redacted]');
+    }
+    const nested = parsed.searchParams.get('d');
+    if (nested && /^https?:\/\//i.test(nested)) parsed.searchParams.set('d', redactSensitiveUrl(nested));
+    return parsed.toString();
+  } catch {
+    return value.replace(/([?&](?:api[_-]?password|password|authorization|access[_-]?token|refresh[_-]?token)=)[^&]*/gi, '$1[redacted]');
+  }
+}
+
+function sanitizePublicResult(value, key = '') {
+  if (Array.isArray(value)) return value.map((item) => sanitizePublicResult(item, key));
+  if (!value || typeof value !== 'object') {
+    if (typeof value === 'string' && (/url|uri|link|proxy/i.test(key) || /^https?:\/\//i.test(value))) return redactSensitiveUrl(value);
+    return value;
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (/^(?:password|api[_-]?password|authorization|access[_-]?token|refresh[_-]?token)$/i.test(k)) continue;
+    out[k] = sanitizePublicResult(v, k);
+  }
+  return out;
+}
+
 function extractLinkMeta(url, referer = null) {
   const meta = { expiresAt: null, ttlSeconds: null, referer: referer || null, likelySigned: false };
   try {
@@ -3361,7 +3390,7 @@ wss.on('connection', async (ws, req) => {
       }
       const state = await job.getState();
       const result = state === 'completed' ? job.returnvalue || job._returnvalue || null : null;
-      ws.send(JSON.stringify({ type: 'job_update', jobId: data.jobId, state, result }));
+      ws.send(JSON.stringify({ type: 'job_update', jobId: data.jobId, state, result: sanitizePublicResult(result) }));
     } catch (e) {
       ws.send(JSON.stringify({ type: 'error', message: e.message }));
     }
